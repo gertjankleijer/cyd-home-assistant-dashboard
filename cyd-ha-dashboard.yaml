@@ -2,55 +2,58 @@
 # ESP32-2432S028R (CYD) — Home Assistant Dashboard
 # ESPHome + LVGL | 320x240 ILI9341 | XPT2046 Touch
 #
-# PUBLIC TEMPLATE
-# - No personal Wi-Fi credentials or Home Assistant entity IDs are included.
-# - Copy secrets.yaml.example to secrets.yaml and fill in your own values.
-#
 # PAGE 1 — Weather
 # PAGE 2 — Lights
-# PAGE 3 — Home
-# PAGE 4 — Music / Radio
+# PAGE 3 — Huis
+# PAGE 4 — Muziek
 # PAGE 5 — Audio
 #
-# Features:
-# - 4 lights with single-tap toggle and double-tap dimmer popup
-# - RGB colour popup for one light, including 2400 K warm white
-# - Home page with door lock, room temperature and washing-machine popup
-# - Automatic washing-machine popup when the machine starts
-# - Radio page and media-player volume controls
-# - NPO 3FM direct via TuneIn; other stations use configurable HA button entities
-# - Guest Wi-Fi QR-code popup
-# - Automatic return to the home/weather page after inactivity
-# - Media page stays open while media is playing
-# - Home Assistant connection indicator (green/red)
-# - Automatic display brightness schedule
-# - LVGL display rotation: 180 degrees
+# Aangepast voor:
+# - 4 lampen
+# - correcte text_sensors voor HA states
+# - correcte lichtenteller 0/4 ON
+# - Bedlampen verwijderd; Dressoirkast behouden
+# - Nederlandse 24-uurs klok
+# - Muziekpagina met 6 radiozenders + actieve zender + stop
+# - Huispagina met deurstatus, woonkamer temperatuur en wasmachine
+# - Audiopagina met volume-slider, volume +/- , mute, play/pauze en stop
+# - Automatische displayhelderheid en HA-verbindingsindicator
+# - Gasten-WiFi icoon op hoofdpagina met grote QR-code popup
+# - Na 1 minuut inactiviteit automatisch terug naar hoofdpagina
+# - Audio blijft open zolang Echo Dot afspeelt
+# - Na stoppen/pauze: na 1 minuut terug naar hoofdpagina
+# - Radiozender kiezen opent automatisch Echo Dot volume
+# - Wasmachine-popup opent automatisch zodra de wasmachine aangaat
+# - Dubbelklik op lamp opent dimmer-popup
+# - Voorraam RGB-popup bevat kleurkeuze
+# - Warm wit Voorraam RGB is exact 2400 K
+# - NPO 3FM toegevoegd via TuneIn
+# - Onderin vaste vorige/volgende paginaknoppen met doorloop van laatste naar eerste
+# ============================================================================
+# v22 — unified secrets + navigatieknoppen
+# Persoonlijke instellingen en Home Assistant entity-ID's staan in secrets.yaml.
+# Deze dashboard-YAML kan daardoor veilig als basis voor de publieke GitHub-versie dienen.
 # ============================================================================
 
 substitutions:
   device_name: "cyd-dashboard"
-  friendly_name: "CYD Home Assistant Dashboard"
+  friendly_name: !secret cyd_dashboard_friendly_name
 
-  # Display labels — safe to customise directly in this file.
-  light_living_room_name: "Woonkamer"
-  light_kitchen_name: "Keuken"
-  light_office_name: "RGB lamp"
-  light_dressoir_name: "Lamp 4"
-  media_player_name: "MEDIA"
-
-  # Wi-Fi and all Home Assistant entity IDs are stored in secrets.yaml.
+  # WiFi van de ESP zelf
+  # De ESP blijft dus gewoon op je normale thuisnetwerk.
   wifi_ssid: !secret wifi_ssid
   wifi_password: !secret wifi_password
+
+  # Gasten-WiFi — alleen voor QR-code
   guest_wifi_ssid: !secret guest_wifi_ssid
   guest_wifi_password: !secret guest_wifi_password
-
   # Lights
   light_living_room: !secret light_living_room
   light_kitchen: !secret light_kitchen
   light_office: !secret light_office
   light_dressoir: !secret light_dressoir
 
-  # Radio buttons / helpers in Home Assistant
+  # Muziek / radio
   music_538: !secret music_538
   music_qmusic: !secret music_qmusic
   music_veronica: !secret music_veronica
@@ -65,7 +68,7 @@ substitutions:
   weather_pressure_entity: !secret weather_pressure_entity
   weather_wind_bearing_entity: !secret weather_wind_bearing_entity
 
-  # Media / Home
+  # Media / Huis
   media_player_entity: !secret media_player_entity
   front_door_lock_entity: !secret front_door_lock_entity
   living_room_climate_entity: !secret living_room_climate_entity
@@ -73,7 +76,6 @@ substitutions:
   washing_machine_program_entity: !secret washing_machine_program_entity
   washing_machine_temperature_entity: !secret washing_machine_temperature_entity
   washing_machine_remaining_time_entity: !secret washing_machine_remaining_time_entity
-
 # ============================================================================
 # ESPHOME
 # ============================================================================
@@ -104,10 +106,6 @@ logger:
 
 
 api:
-  # Recommended after your first successful flash:
-  # encryption:
-  #   key: !secret api_encryption_key
-
   on_client_connected:
     - wait_until:
         condition:
@@ -135,6 +133,8 @@ api:
               text_color: color_red
 
 
+  encryption:
+    key: !secret cyd_dashboard__encryption_key
 ota:
   - platform: esphome
 
@@ -145,7 +145,7 @@ wifi:
 
   ap:
     ssid: "${device_name}-AP"
-    password: "cyd12345"
+    password: !secret cyd_dashboard_ap_password
 
 
 captive_portal:
@@ -1115,7 +1115,7 @@ script:
                 text: "Uit"
 
 
-      # Office / RGB light
+      # Office / Voorraam
       - if:
           condition:
             lambda: 'return id(state_light_office).state == "on";'
@@ -1170,7 +1170,7 @@ script:
                 text: "Uit"
 
 
-      # Light 4
+      # Dressoir
       - if:
           condition:
             lambda: 'return id(state_light_dressoir).state == "on";'
@@ -1781,7 +1781,7 @@ lvgl:
   buffer_size: 25%
 
   # Na 1 minuut zonder aanraking terug naar Home.
-  # Op de Audio-pagina blijft hij staan zolang media player 'playing' is.
+  # Op de Audio-pagina blijft hij staan zolang Echo Dot 'playing' is.
   on_idle:
     timeout: 1min
     then:
@@ -1849,6 +1849,60 @@ lvgl:
   top_layer:
 
     widgets:
+
+      # ----------------------------------------------------------------------
+      # VASTE PAGINANAVIGATIE ONDERIN
+      # Links = vorige pagina, rechts = volgende pagina.
+      # Dankzij page_wrap: true loopt Audio -> Weer en Weer -> Audio.
+      # ----------------------------------------------------------------------
+
+      - button:
+          id: btn_page_previous
+          x: 6
+          y: 214
+          width: 30
+          height: 22
+          bg_color: color_bg_card
+          bg_opa: COVER
+          border_width: 1
+          border_color: color_border
+          radius: 7
+          pad_all: 0
+          on_click:
+            then:
+              - lvgl.page.previous:
+                  animation: MOVE_RIGHT
+                  time: 300ms
+          widgets:
+            - label:
+                text: "<"
+                text_font: font_header
+                text_color: color_text_secondary
+                align: CENTER
+
+      - button:
+          id: btn_page_next
+          x: 284
+          y: 214
+          width: 30
+          height: 22
+          bg_color: color_bg_card
+          bg_opa: COVER
+          border_width: 1
+          border_color: color_border
+          radius: 7
+          pad_all: 0
+          on_click:
+            then:
+              - lvgl.page.next:
+                  animation: MOVE_LEFT
+                  time: 300ms
+          widgets:
+            - label:
+                text: ">"
+                text_font: font_header
+                text_color: color_text_secondary
+                align: CENTER
 
       - obj:
           id: dot_0
@@ -2310,7 +2364,7 @@ lvgl:
 
 
       # ------------------------------------------------------------
-      # DIMMER POPUP — Living room light
+      # DIMMER POPUP — Voortafel
       # ------------------------------------------------------------
       - obj:
           id: light_living_popup_overlay
@@ -2344,7 +2398,7 @@ lvgl:
 
                 widgets:
                   - label:
-                      text: "${light_living_room_name}"
+                      text: "Voortafel"
                       text_font: font_header
                       text_color: color_text_primary
                       x: 2
@@ -2420,7 +2474,7 @@ lvgl:
                             align: CENTER
 
       # ------------------------------------------------------------
-      # DIMMER POPUP — Kitchen light
+      # DIMMER POPUP — Achtertafel
       # ------------------------------------------------------------
       - obj:
           id: light_kitchen_popup_overlay
@@ -2454,7 +2508,7 @@ lvgl:
 
                 widgets:
                   - label:
-                      text: "${light_kitchen_name}"
+                      text: "Achtertafel"
                       text_font: font_header
                       text_color: color_text_primary
                       x: 2
@@ -2530,7 +2584,7 @@ lvgl:
                             align: CENTER
 
       # ------------------------------------------------------------
-      # DIMMER + RGB POPUP — RGB light
+      # DIMMER + RGB POPUP — Voorraam
       # ------------------------------------------------------------
       - obj:
           id: light_office_popup_overlay
@@ -2564,7 +2618,7 @@ lvgl:
 
                 widgets:
                   - label:
-                      text: "${light_office_name}"
+                      text: "Voorraam RGB"
                       text_font: font_header
                       text_color: color_text_primary
                       x: 2
@@ -2782,7 +2836,7 @@ lvgl:
                             align: CENTER
 
       # ------------------------------------------------------------
-      # DIMMER POPUP — Light 4
+      # DIMMER POPUP — Dressoir
       # ------------------------------------------------------------
       - obj:
           id: light_dressoir_popup_overlay
@@ -2816,7 +2870,7 @@ lvgl:
 
                 widgets:
                   - label:
-                      text: "${light_dressoir_name}"
+                      text: "Dressoir"
                       text_font: font_header
                       text_color: color_text_primary
                       x: 2
@@ -2892,7 +2946,7 @@ lvgl:
                             align: CENTER
 
 
-  page_wrap: false
+  page_wrap: true
 
 
   # ==========================================================================
@@ -3416,7 +3470,7 @@ lvgl:
                         y: 5
                     - label:
                         id: lbl_living_name
-                        text: "${light_living_room_name}"
+                        text: "Voortafel"
                         text_font: font_body
                         text_color: color_text_secondary
                         x: 28
@@ -3471,7 +3525,7 @@ lvgl:
                         y: 5
                     - label:
                         id: lbl_kitchen_name
-                        text: "${light_kitchen_name}"
+                        text: "Achtertafel"
                         text_font: font_body
                         text_color: color_text_secondary
                         x: 28
@@ -3542,7 +3596,7 @@ lvgl:
                         y: 5
                     - label:
                         id: lbl_office_name
-                        text: "${light_office_name}"
+                        text: "Voorraam"
                         text_font: font_body
                         text_color: color_text_secondary
                         x: 28
@@ -3597,7 +3651,7 @@ lvgl:
                         y: 5
                     - label:
                         id: lbl_dressoir_name
-                        text: "${light_dressoir_name}"
+                        text: "Dressoir"
                         text_font: font_body
                         text_color: color_text_secondary
                         x: 28
@@ -3876,7 +3930,7 @@ lvgl:
                   styles: style_card
                   on_click:
                     then:
-                      # NPO 3FM directly on the configured media player via TuneIn.
+                      # NPO 3FM rechtstreeks op de Echo Dot via TuneIn.
                       - homeassistant.action:
                           action: media_player.play_media
                           data:
@@ -4147,7 +4201,7 @@ lvgl:
                   text_font: font_header
                   text_color: color_text_primary
               - label:
-                  text: "${media_player_name}"
+                  text: "ECHO DOT"
                   text_font: font_small
                   text_color: color_teal
 
