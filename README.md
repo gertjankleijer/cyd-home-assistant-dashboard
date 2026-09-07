@@ -32,6 +32,50 @@ Deze publieke template bevat **geen persoonlijke Wi-Fi-gegevens, wachtwoorden of
 - ESPHome 2026.x met LVGL
 - Home Assistant met ESPHome-integratie
 
+### Foto van het CYD-bord
+
+![ESP32-2432S028R CYD](docs/cyd-board.jpg)
+
+> Zet je eigen foto in de map `docs` en noem het bestand **`cyd-board.jpg`**.
+> Daarna wordt de foto automatisch hierboven in GitHub weergegeven.
+
+## 3D-geprinte behuizing
+
+Voor dit project is de **CYD Desk Buddy**-behuizing gebruikt.
+
+- **Model:** CYD Desk Buddy for Bambu Lab / Home Assistant
+- **Bron / download:** https://makerworld.com/nl/models/2787810-cyd-desk-buddy-for-bambu-lab-home-assistant#profileId-3099382
+- **Gebruikte uitvoering:** Symmetrical Bezel + 60° Symmetrical Base
+- **Materiaal van deze build:** PETG
+- **Laaghoogte:** 0,20 mm
+- **Infill:** 15% gyroid
+- **Nozzle:** 0,4 mm
+
+De originele 3D-bestanden en het actuele printprofiel blijven bij de maker op MakerWorld. Zo wordt altijd naar de oorspronkelijke bron verwezen en kunnen gebruikers daar de nieuwste STL/3MF-bestanden downloaden.
+
+### Opbouw / bouwtekening
+
+```mermaid
+flowchart TD
+    A[ESP32-2432S028R CYD] --> B[Symmetrical Bezel]
+    B --> C[CYD vastzetten in behuizing]
+    C --> D[Voedingskabel naar achterzijde leiden]
+    D --> E[60° Symmetrical Base monteren]
+    E --> F[Rubber / siliconen antislipvoetjes onder de voet]
+    F --> G[Plaatsen op tv-meubel]
+```
+
+### Montage in het kort
+
+1. Print of bestel de **Symmetrical Bezel** en **60° Symmetrical Base** van de MakerWorld-pagina.
+2. Plaats het CYD-bord voorzichtig in de bezel zonder druk op het display uit te oefenen.
+3. Leid de voedingskabel zo dat er geen trekkracht op USB of soldeerpunten komt.
+4. Monteer de 60° basis.
+5. Plak kleine rubberen of siliconen antislipvoetjes onder de basis zodat de Desk Buddy niet over het meubel schuift.
+6. Flash daarna `cyd-ha-dashboard.yaml` en controleer touch, schermrotatie en Home Assistant-verbinding.
+
+> De vorm en maatvoering van de behuizing zijn eigendom van de oorspronkelijke MakerWorld-maker. Deze repository bevat daarom geen kopie van diens STL/3MF-bestanden; gebruik de originele downloadlink hierboven.
+
 ## Bestanden
 
 | Bestand | Doel |
