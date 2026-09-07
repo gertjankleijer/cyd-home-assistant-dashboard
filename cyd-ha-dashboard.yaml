@@ -1,0 +1,4530 @@
+# ============================================================================
+# ESP32-2432S028R (CYD) — Home Assistant Dashboard
+# ESPHome + LVGL | 320x240 ILI9341 | XPT2046 Touch
+#
+# PUBLIC TEMPLATE
+# - No personal Wi-Fi credentials or Home Assistant entity IDs are included.
+# - Copy secrets.yaml.example to secrets.yaml and fill in your own values.
+#
+# PAGE 1 — Weather
+# PAGE 2 — Lights
+# PAGE 3 — Home
+# PAGE 4 — Music / Radio
+# PAGE 5 — Audio
+#
+# Features:
+# - 4 lights with single-tap toggle and double-tap dimmer popup
+# - RGB colour popup for one light, including 2400 K warm white
+# - Home page with door lock, room temperature and washing-machine popup
+# - Automatic washing-machine popup when the machine starts
+# - Radio page and media-player volume controls
+# - NPO 3FM direct via TuneIn; other stations use configurable HA button entities
+# - Guest Wi-Fi QR-code popup
+# - Automatic return to the home/weather page after inactivity
+# - Media page stays open while media is playing
+# - Home Assistant connection indicator (green/red)
+# - Automatic display brightness schedule
+# - LVGL display rotation: 180 degrees
+# ============================================================================
+
+substitutions:
+  device_name: "cyd-dashboard"
+  friendly_name: "CYD Home Assistant Dashboard"
+
+  # Display labels — safe to customise directly in this file.
+  light_living_room_name: "Woonkamer"
+  light_kitchen_name: "Keuken"
+  light_office_name: "RGB lamp"
+  light_dressoir_name: "Lamp 4"
+  media_player_name: "MEDIA"
+
+  # Wi-Fi and all Home Assistant entity IDs are stored in secrets.yaml.
+  wifi_ssid: !secret wifi_ssid
+  wifi_password: !secret wifi_password
+  guest_wifi_ssid: !secret guest_wifi_ssid
+  guest_wifi_password: !secret guest_wifi_password
+
+  # Lights
+  light_living_room: !secret light_living_room
+  light_kitchen: !secret light_kitchen
+  light_office: !secret light_office
+  light_dressoir: !secret light_dressoir
+
+  # Radio buttons / helpers in Home Assistant
+  music_538: !secret music_538
+  music_qmusic: !secret music_qmusic
+  music_veronica: !secret music_veronica
+  music_bingo_fm: !secret music_bingo_fm
+  music_sterren_nl: !secret music_sterren_nl
+
+  # Weather
+  weather_entity: !secret weather_entity
+  weather_temperature_entity: !secret weather_temperature_entity
+  weather_apparent_temperature: !secret weather_apparent_temperature
+  weather_wind_entity: !secret weather_wind_entity
+  weather_pressure_entity: !secret weather_pressure_entity
+  weather_wind_bearing_entity: !secret weather_wind_bearing_entity
+
+  # Media / Home
+  media_player_entity: !secret media_player_entity
+  front_door_lock_entity: !secret front_door_lock_entity
+  living_room_climate_entity: !secret living_room_climate_entity
+  washing_machine_entity: !secret washing_machine_entity
+  washing_machine_program_entity: !secret washing_machine_program_entity
+  washing_machine_temperature_entity: !secret washing_machine_temperature_entity
+  washing_machine_remaining_time_entity: !secret washing_machine_remaining_time_entity
+
+# ============================================================================
+# ESPHOME
+# ============================================================================
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+  on_boot:
+    priority: -10
+    then:
+      - light.turn_on:
+          id: backlight
+          brightness: 65%
+
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+    advanced:
+      minimum_chip_revision: "3.1"
+      sram1_as_iram: true
+
+
+logger:
+  level: WARN
+
+
+api:
+  # Recommended after your first successful flash:
+  # encryption:
+  #   key: !secret api_encryption_key
+
+  on_client_connected:
+    - wait_until:
+        condition:
+          api.connected:
+            state_subscription_only: true
+    - lvgl.widget.update:
+        id: ha_status_dot
+        bg_color: color_green
+    - lvgl.label.update:
+        id: ha_status_label
+        text_color: color_green
+
+  on_client_disconnected:
+    - if:
+        condition:
+          not:
+            api.connected:
+              state_subscription_only: true
+        then:
+          - lvgl.widget.update:
+              id: ha_status_dot
+              bg_color: color_red
+          - lvgl.label.update:
+              id: ha_status_label
+              text_color: color_red
+
+
+ota:
+  - platform: esphome
+
+
+wifi:
+  ssid: ${wifi_ssid}
+  password: ${wifi_password}
+
+  ap:
+    ssid: "${device_name}-AP"
+    password: "cyd12345"
+
+
+captive_portal:
+
+
+# ============================================================================
+# TIME
+# ============================================================================
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+    on_time_sync:
+      then:
+        - script.execute: update_auto_brightness
+
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 0
+        then:
+          - script.execute: update_auto_brightness
+
+      - seconds: 0
+        minutes: 0
+        hours: 6
+        then:
+          - script.execute: update_auto_brightness
+
+      - seconds: 0
+        minutes: 0
+        hours: 22
+        then:
+          - script.execute: update_auto_brightness
+
+
+# ============================================================================
+# SPI
+# ============================================================================
+
+spi:
+
+  # Display
+  - id: display_spi
+    mosi_pin: GPIO13
+    clk_pin: GPIO14
+
+  # Touch
+  - id: touch_spi
+    mosi_pin: GPIO32
+    miso_pin: GPIO39
+    clk_pin: GPIO25
+
+
+# ============================================================================
+# BACKLIGHT
+# ============================================================================
+
+output:
+  - platform: ledc
+    pin: GPIO21
+    id: backlight_output
+
+
+light:
+  - platform: monochromatic
+    output: backlight_output
+    name: "Display Backlight"
+    id: backlight
+    restore_mode: ALWAYS_ON
+
+
+# ============================================================================
+# DISPLAY
+# ============================================================================
+
+display:
+  - platform: ili9xxx
+    model: ili9341
+    spi_id: display_spi
+
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+
+    dimensions:
+      width: 320
+      height: 240
+
+    color_order: RGB
+    invert_colors: false
+
+    update_interval: never
+
+    id: cyd_display
+
+
+# ============================================================================
+# TOUCH
+# ============================================================================
+
+touchscreen:
+  - platform: xpt2046
+    spi_id: touch_spi
+
+    cs_pin: GPIO33
+    interrupt_pin: GPIO36
+
+    id: cyd_touch
+
+    calibration:
+      x_min: 361
+      x_max: 3771
+      y_min: 165
+      y_max: 3775
+
+    transform:
+      swap_xy: true
+      mirror_x: true
+      mirror_y: true
+
+    update_interval: 50ms
+
+
+# ============================================================================
+# FONTS
+# ============================================================================
+
+font:
+  - file:
+      type: gfonts
+      family: Roboto
+    id: font_body
+    size: 14
+    bpp: 4
+    glyphs: " !\"%()'+-,./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz°"
+
+  - file:
+      type: gfonts
+      family: Roboto
+    id: font_temp_large
+    size: 38
+    bpp: 4
+    glyphs: " 0123456789.-°"
+
+  - file:
+      type: gfonts
+      family: Roboto
+    id: font_small
+    size: 11
+    bpp: 4
+    glyphs: " !\"%()'+-,./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz°"
+
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_header
+    size: 16
+    bpp: 4
+    glyphs: " !\"%()'+-,./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz°"
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_greeting
+    size: 20
+    bpp: 4
+    glyphs: " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 500
+    id: font_volume
+    size: 28
+    bpp: 4
+    glyphs: " 0123456789:%"
+
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: font_icons_24
+    size: 24
+    bpp: 4
+    glyphs:
+      - "\U000F0335"
+      - "\U000F0336"
+      - "\U000F040A"
+      - "\U000F0415"
+
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: font_icons_40
+    size: 40
+    bpp: 4
+    glyphs:
+      - "\U000F0594"
+      - "\U000F0591"
+      - "\U000F0590"
+      - "\U000F0595"
+      - "\U000F0596"
+      - "\U000F0597"
+      - "\U000F0598"
+      - "\U000F0599"
+      - "\U000F067E"
+      - "\U000F059D"
+
+  - file: "https://github.com/Templarian/MaterialDesign-Webfont/raw/master/fonts/materialdesignicons-webfont.ttf"
+    id: font_icons_18
+    size: 18
+    bpp: 4
+    glyphs:
+      - "\U000F0335"
+      - "\U000F0336"
+      - "\U000F0E0E"
+      - "\U000F05A9"  # WiFi
+
+
+# ============================================================================
+# COLOURS
+# ============================================================================
+
+color:
+
+  - id: color_bg
+    hex: "1A1A2E"
+
+  - id: color_bg_card
+    hex: "16213E"
+
+  - id: color_bg_card_active
+    hex: "2A2A4A"
+
+  - id: color_teal
+    hex: "64FFDA"
+
+  - id: color_teal_dim
+    hex: "1A3A34"
+
+  - id: color_amber
+    hex: "FFD93D"
+
+  - id: color_amber_dim
+    hex: "3A3420"
+
+  - id: color_text_primary
+    hex: "E6F1FF"
+
+  - id: color_text_secondary
+    hex: "8892B0"
+
+  - id: color_text_tertiary
+    hex: "4A5568"
+
+  - id: color_border
+    hex: "2A2A4A"
+
+  - id: color_green
+    hex: "4CAF50"
+
+  - id: color_red
+    hex: "FF5252"
+
+
+# ============================================================================
+# NUMERIC HOME ASSISTANT SENSORS
+# ============================================================================
+
+sensor:
+
+  # --------------------------------------------------------------------------
+  # WEATHER
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: weather_temperature
+    entity_id: ${weather_temperature_entity}
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_weather_temp
+            text:
+              format: "%.0f"
+              args: ["x"]
+
+
+  - platform: homeassistant
+    id: weather_apparent_temperature
+    entity_id: ${weather_entity}
+    attribute: apparent_temperature
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_feels_like
+            text:
+              format: "%.0f°C"
+              args: ["x"]
+
+
+  - platform: homeassistant
+    id: weather_humidity
+    entity_id: ${weather_entity}
+    attribute: humidity
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_humidity_val
+            text:
+              format: "%.0f%%"
+              args: ["x"]
+
+
+  - platform: homeassistant
+    id: weather_wind_speed
+    entity_id: ${weather_wind_entity}
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_wind_val
+            text:
+              format: "%.0f km/h"
+              args: ["x"]
+
+
+  - platform: homeassistant
+    id: weather_pressure
+    entity_id: ${weather_pressure_entity}
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_pressure_val
+            text:
+              format: "%.0f hPa"
+              args: ["x"]
+
+
+  - platform: homeassistant
+    id: weather_wind_bearing
+    entity_id: ${weather_wind_bearing_entity}
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_wind_direction_val
+            text: !lambda |-
+              float deg = fmodf(x + 360.0f, 360.0f);
+
+              if (deg >= 337.5f || deg < 22.5f)
+                return std::string("N");
+              if (deg < 67.5f)
+                return std::string("NO");
+              if (deg < 112.5f)
+                return std::string("O");
+              if (deg < 157.5f)
+                return std::string("ZO");
+              if (deg < 202.5f)
+                return std::string("Z");
+              if (deg < 247.5f)
+                return std::string("ZW");
+              if (deg < 292.5f)
+                return std::string("W");
+
+              return std::string("NW");
+
+
+  # --------------------------------------------------------------------------
+  # AUDIO / VOLUME
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: media_player_volume
+    entity_id: ${media_player_entity}
+    attribute: volume_level
+
+    on_value:
+      then:
+        - lvgl.slider.update:
+            id: slider_media_volume
+            value: !lambda return (x * 100.0f);
+
+        - lvgl.label.update:
+            id: lbl_audio_volume
+            text:
+              format: "%.0f%%"
+              args: ["x * 100.0f"]
+
+
+  # --------------------------------------------------------------------------
+  # HUIS
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: living_room_temperature
+    entity_id: ${living_room_climate_entity}
+    attribute: current_temperature
+
+    on_value:
+      then:
+        - lvgl.label.update:
+            id: lbl_house_temperature
+            text:
+              format: "%.1f°C"
+              args: ["x"]
+
+
+  - platform: homeassistant
+    id: washing_machine_temperature
+    entity_id: ${washing_machine_temperature_entity}
+
+    on_value:
+      then:
+        - script.execute: update_washing_machine_popup
+
+
+  # Miele Remaining time: geschat aantal minuten resterend
+  - platform: homeassistant
+    id: washing_machine_remaining_time
+    entity_id: ${washing_machine_remaining_time_entity}
+
+    on_value:
+      then:
+        - script.execute: update_washing_machine_popup
+
+
+  # --------------------------------------------------------------------------
+  # LIGHT BRIGHTNESS
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: brightness_living
+    entity_id: ${light_living_room}
+    attribute: brightness
+    on_value:
+      then:
+        - script.execute: update_light_cards
+        - if:
+            condition:
+              lambda: 'return !isnan(x);'
+            then:
+              - lvgl.slider.update:
+                  id: slider_light_living_dimmer
+                  value: !lambda return x;
+              - lvgl.label.update:
+                  id: lbl_light_living_popup_pct
+                  text:
+                    format: "%.0f%%"
+                    args: ["(x / 255.0f) * 100.0f"]
+
+
+  - platform: homeassistant
+    id: brightness_kitchen
+    entity_id: ${light_kitchen}
+    attribute: brightness
+    on_value:
+      then:
+        - script.execute: update_light_cards
+        - if:
+            condition:
+              lambda: 'return !isnan(x);'
+            then:
+              - lvgl.slider.update:
+                  id: slider_light_kitchen_dimmer
+                  value: !lambda return x;
+              - lvgl.label.update:
+                  id: lbl_light_kitchen_popup_pct
+                  text:
+                    format: "%.0f%%"
+                    args: ["(x / 255.0f) * 100.0f"]
+
+
+  - platform: homeassistant
+    id: brightness_office
+    entity_id: ${light_office}
+    attribute: brightness
+    on_value:
+      then:
+        - script.execute: update_light_cards
+        - if:
+            condition:
+              lambda: 'return !isnan(x);'
+            then:
+              - lvgl.slider.update:
+                  id: slider_light_office_dimmer
+                  value: !lambda return x;
+              - lvgl.label.update:
+                  id: lbl_light_office_popup_pct
+                  text:
+                    format: "%.0f%%"
+                    args: ["(x / 255.0f) * 100.0f"]
+
+
+  - platform: homeassistant
+    id: brightness_dressoir
+    entity_id: ${light_dressoir}
+    attribute: brightness
+    on_value:
+      then:
+        - script.execute: update_light_cards
+        - if:
+            condition:
+              lambda: 'return !isnan(x);'
+            then:
+              - lvgl.slider.update:
+                  id: slider_light_dressoir_dimmer
+                  value: !lambda return x;
+              - lvgl.label.update:
+                  id: lbl_light_dressoir_popup_pct
+                  text:
+                    format: "%.0f%%"
+                    args: ["(x / 255.0f) * 100.0f"]
+
+
+# ============================================================================
+# TEXT HOME ASSISTANT SENSORS
+# ============================================================================
+
+text_sensor:
+
+  # --------------------------------------------------------------------------
+  # WEATHER CONDITION
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: weather_condition
+    entity_id: ${weather_entity}
+
+    on_value:
+      then:
+
+        - lvgl.label.update:
+            id: lbl_weather_condition
+            text: !lambda |-
+              std::string cond = x;
+
+              if (cond == "sunny")
+                return std::string("Helder");
+
+              if (cond == "clear-night")
+                return std::string("Heldere nacht");
+
+              if (cond == "partlycloudy")
+                return std::string("Half bewolkt");
+
+              if (cond == "cloudy")
+                return std::string("Bewolkt");
+
+              if (cond == "rainy")
+                return std::string("Regen");
+
+              if (cond == "pouring")
+                return std::string("Veel regen");
+
+              if (cond == "snowy")
+                return std::string("Sneeuw");
+
+              if (cond == "fog")
+                return std::string("Mist");
+
+              if (cond == "windy")
+                return std::string("Winderig");
+
+              return cond;
+
+
+        - lvgl.label.update:
+            id: lbl_weather_icon
+            text: !lambda |-
+              std::string cond = x;
+
+              if (cond == "sunny")
+                return std::string("\U000F0599");
+
+              if (cond == "clear-night")
+                return std::string("\U000F0594");
+
+              if (cond == "partlycloudy")
+                return std::string("\U000F0595");
+
+              if (cond == "cloudy")
+                return std::string("\U000F0590");
+
+              if (cond == "rainy")
+                return std::string("\U000F0597");
+
+              if (cond == "pouring")
+                return std::string("\U000F0596");
+
+              if (cond == "snowy")
+                return std::string("\U000F0598");
+
+              if (cond == "fog")
+                return std::string("\U000F0591");
+
+              if (cond == "windy")
+                return std::string("\U000F059D");
+
+              return std::string("\U000F0595");
+
+
+
+  # --------------------------------------------------------------------------
+  # LIGHT STATES
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: state_light_living
+    entity_id: ${light_living_room}
+    on_value:
+      then:
+        - script.execute: update_light_cards
+
+
+  - platform: homeassistant
+    id: state_light_kitchen
+    entity_id: ${light_kitchen}
+    on_value:
+      then:
+        - script.execute: update_light_cards
+
+
+  - platform: homeassistant
+    id: state_light_office
+    entity_id: ${light_office}
+    on_value:
+      then:
+        - script.execute: update_light_cards
+
+
+  - platform: homeassistant
+    id: state_light_dressoir
+    entity_id: ${light_dressoir}
+    on_value:
+      then:
+        - script.execute: update_light_cards
+
+
+
+  # --------------------------------------------------------------------------
+  # MEDIA PLAYER
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: media_player_state
+    entity_id: ${media_player_entity}
+    on_value:
+      then:
+        - script.execute: update_music_cards
+        - lvgl.label.update:
+            id: lbl_audio_state
+            text: !lambda |-
+              if (x == "playing")
+                return std::string("SPEELT");
+              if (x == "paused")
+                return std::string("GEPAUZEERD");
+              if (x == "idle" || x == "standby")
+                return std::string("GEREED");
+              if (x == "off" || x == "unavailable")
+                return std::string("NIET BESCHIKBAAR");
+              return x;
+
+        - if:
+            condition:
+              lambda: 'return x == "playing";'
+            then:
+              - script.stop: audio_return_home
+            else:
+              - if:
+                  condition:
+                    lvgl.page.is_showing: page_audio
+                  then:
+                    - script.execute: audio_return_home
+
+  - platform: homeassistant
+    id: media_player_title
+    entity_id: ${media_player_entity}
+    attribute: media_title
+    on_value:
+      then:
+        - script.execute: update_music_cards
+        - lvgl.label.update:
+            id: lbl_audio_title
+            text: !lambda |-
+              if (x.empty())
+                return std::string("Geen media");
+              return x;
+
+
+  # --------------------------------------------------------------------------
+  # HUISSTATUS
+  # --------------------------------------------------------------------------
+
+  - platform: homeassistant
+    id: front_door_lock_state
+    entity_id: ${front_door_lock_entity}
+    on_value:
+      then:
+        - script.execute: update_house_cards
+
+  - platform: homeassistant
+    id: washing_machine_state
+    entity_id: ${washing_machine_entity}
+    on_value:
+      then:
+        - script.execute: update_house_cards
+        - script.execute: update_washing_machine_popup
+
+        # Zodra de wasmachine aan gaat, automatisch de detail-popup openen.
+        # Gaat de machine uit, dan sluit de popup automatisch weer.
+        - if:
+            condition:
+              lambda: 'return x == "on";'
+            then:
+              - lvgl.widget.show: washing_popup_overlay
+            else:
+              - lvgl.widget.hide: washing_popup_overlay
+
+  - platform: homeassistant
+    id: washing_machine_program
+    entity_id: ${washing_machine_program_entity}
+    on_value:
+      then:
+        - script.execute: update_washing_machine_popup
+
+# ============================================================================
+# BINARY HOME ASSISTANT SENSORS
+# ============================================================================
+
+binary_sensor:
+
+  - platform: homeassistant
+    id: media_player_muted
+    entity_id: ${media_player_entity}
+    attribute: is_volume_muted
+
+
+# ============================================================================
+# SCRIPTS
+# ============================================================================
+
+script:
+
+  # --------------------------------------------------------------------------
+  # VERLICHTING KLIKLOGICA
+  # Een enkele tik wordt 350 ms uitgesteld.
+  # Komt er een tweede tik, dan stopt deze actie en opent de dimmer-popup.
+  # --------------------------------------------------------------------------
+
+  - id: light_living_single_click
+    mode: restart
+    then:
+      - delay: 350ms
+      - homeassistant.action:
+          action: light.toggle
+          data:
+            entity_id: ${light_living_room}
+
+  - id: light_kitchen_single_click
+    mode: restart
+    then:
+      - delay: 350ms
+      - homeassistant.action:
+          action: light.toggle
+          data:
+            entity_id: ${light_kitchen}
+
+  - id: light_office_single_click
+    mode: restart
+    then:
+      - delay: 350ms
+      - homeassistant.action:
+          action: light.toggle
+          data:
+            entity_id: ${light_office}
+
+  - id: light_dressoir_single_click
+    mode: restart
+    then:
+      - delay: 350ms
+      - homeassistant.action:
+          action: light.toggle
+          data:
+            entity_id: ${light_dressoir}
+
+
+  # Audio: als afspelen stopt/pauzeert, na 1 minuut terug naar Home
+  - id: audio_return_home
+    mode: restart
+    then:
+      - delay: 1min
+      - if:
+          condition:
+            lvgl.page.is_showing: page_audio
+          then:
+            - if:
+                condition:
+                  lambda: 'return id(media_player_state).state != "playing";'
+                then:
+                  - lvgl.page.show:
+                      id: page_weather
+                      animation: MOVE_RIGHT
+                      time: 300ms
+
+
+  # --------------------------------------------------------------------------
+  # NAVIGATION DOTS
+  # --------------------------------------------------------------------------
+
+  - id: update_dots
+    parameters:
+      page: int
+
+    then:
+
+      - lvgl.widget.update:
+          id: dot_0
+          bg_color: !lambda |-
+            return page == 0
+              ? lv_color_hex(0x64FFDA)
+              : lv_color_hex(0x2A2A4A);
+
+      - lvgl.widget.update:
+          id: dot_1
+          bg_color: !lambda |-
+            return page == 1
+              ? lv_color_hex(0x64FFDA)
+              : lv_color_hex(0x2A2A4A);
+
+      - lvgl.widget.update:
+          id: dot_2
+          bg_color: !lambda |-
+            return page == 2
+              ? lv_color_hex(0x64FFDA)
+              : lv_color_hex(0x2A2A4A);
+
+      - lvgl.widget.update:
+          id: dot_3
+          bg_color: !lambda |-
+            return page == 3
+              ? lv_color_hex(0x64FFDA)
+              : lv_color_hex(0x2A2A4A);
+
+      - lvgl.widget.update:
+          id: dot_4
+          bg_color: !lambda |-
+            return page == 4
+              ? lv_color_hex(0x64FFDA)
+              : lv_color_hex(0x2A2A4A);
+
+
+  # --------------------------------------------------------------------------
+  # LIGHT CARDS
+  # --------------------------------------------------------------------------
+
+  - id: update_light_cards
+
+    then:
+
+      # Living
+      - if:
+          condition:
+            lambda: 'return id(state_light_living).state == "on";'
+
+          then:
+            - lvgl.widget.update:
+                id: btn_light_living
+                bg_color: color_amber_dim
+                border_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_living_icon
+                text_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_living_name
+                text_color: color_text_primary
+
+            - lvgl.label.update:
+                id: lbl_brightness_living
+                text: !lambda |-
+                  if (isnan(id(brightness_living).state))
+                    return std::string("Aan");
+
+                  char buf[12];
+
+                  snprintf(
+                    buf,
+                    sizeof(buf),
+                    "%.0f%%",
+                    (id(brightness_living).state / 255.0f) * 100.0f
+                  );
+
+                  return std::string(buf);
+
+          else:
+            - lvgl.widget.update:
+                id: btn_light_living
+                bg_color: color_bg_card
+                border_color: color_border
+
+            - lvgl.label.update:
+                id: lbl_living_icon
+                text_color: color_text_tertiary
+
+            - lvgl.label.update:
+                id: lbl_living_name
+                text_color: color_text_secondary
+
+            - lvgl.label.update:
+                id: lbl_brightness_living
+                text: "Uit"
+
+
+      # Kitchen
+      - if:
+          condition:
+            lambda: 'return id(state_light_kitchen).state == "on";'
+
+          then:
+            - lvgl.widget.update:
+                id: btn_light_kitchen
+                bg_color: color_amber_dim
+                border_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_kitchen_icon
+                text_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_kitchen_name
+                text_color: color_text_primary
+
+            - lvgl.label.update:
+                id: lbl_brightness_kitchen
+                text: !lambda |-
+                  if (isnan(id(brightness_kitchen).state))
+                    return std::string("Aan");
+
+                  char buf[12];
+
+                  snprintf(
+                    buf,
+                    sizeof(buf),
+                    "%.0f%%",
+                    (id(brightness_kitchen).state / 255.0f) * 100.0f
+                  );
+
+                  return std::string(buf);
+
+          else:
+            - lvgl.widget.update:
+                id: btn_light_kitchen
+                bg_color: color_bg_card
+                border_color: color_border
+
+            - lvgl.label.update:
+                id: lbl_kitchen_icon
+                text_color: color_text_tertiary
+
+            - lvgl.label.update:
+                id: lbl_kitchen_name
+                text_color: color_text_secondary
+
+            - lvgl.label.update:
+                id: lbl_brightness_kitchen
+                text: "Uit"
+
+
+      # Office / RGB light
+      - if:
+          condition:
+            lambda: 'return id(state_light_office).state == "on";'
+
+          then:
+            - lvgl.widget.update:
+                id: btn_light_office
+                bg_color: color_amber_dim
+                border_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_office_icon
+                text_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_office_name
+                text_color: color_text_primary
+
+            - lvgl.label.update:
+                id: lbl_brightness_office
+                text: !lambda |-
+                  if (isnan(id(brightness_office).state))
+                    return std::string("Aan");
+
+                  char buf[12];
+
+                  snprintf(
+                    buf,
+                    sizeof(buf),
+                    "%.0f%%",
+                    (id(brightness_office).state / 255.0f) * 100.0f
+                  );
+
+                  return std::string(buf);
+
+          else:
+            - lvgl.widget.update:
+                id: btn_light_office
+                bg_color: color_bg_card
+                border_color: color_border
+
+            - lvgl.label.update:
+                id: lbl_office_icon
+                text_color: color_text_tertiary
+
+            - lvgl.label.update:
+                id: lbl_office_name
+                text_color: color_text_secondary
+
+            - lvgl.label.update:
+                id: lbl_brightness_office
+                text: "Uit"
+
+
+      # Light 4
+      - if:
+          condition:
+            lambda: 'return id(state_light_dressoir).state == "on";'
+
+          then:
+            - lvgl.widget.update:
+                id: btn_light_dressoir
+                bg_color: color_amber_dim
+                border_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_dressoir_icon
+                text_color: color_amber
+
+            - lvgl.label.update:
+                id: lbl_dressoir_name
+                text_color: color_text_primary
+
+            - lvgl.label.update:
+                id: lbl_brightness_dressoir
+                text: !lambda |-
+                  if (isnan(id(brightness_dressoir).state))
+                    return std::string("Aan");
+
+                  char buf[12];
+
+                  snprintf(
+                    buf,
+                    sizeof(buf),
+                    "%.0f%%",
+                    (id(brightness_dressoir).state / 255.0f) * 100.0f
+                  );
+
+                  return std::string(buf);
+
+          else:
+            - lvgl.widget.update:
+                id: btn_light_dressoir
+                bg_color: color_bg_card
+                border_color: color_border
+
+            - lvgl.label.update:
+                id: lbl_dressoir_icon
+                text_color: color_text_tertiary
+
+            - lvgl.label.update:
+                id: lbl_dressoir_name
+                text_color: color_text_secondary
+
+            - lvgl.label.update:
+                id: lbl_brightness_dressoir
+                text: "Uit"
+
+
+      # Counter
+      - lvgl.label.update:
+          id: lbl_lights_count
+          text: !lambda |-
+            int count = 0;
+
+            if (id(state_light_living).state == "on")
+              count++;
+
+            if (id(state_light_kitchen).state == "on")
+              count++;
+
+            if (id(state_light_office).state == "on")
+              count++;
+            if (id(state_light_dressoir).state == "on")
+              count++;
+
+            char buf[16];
+
+            snprintf(
+              buf,
+              sizeof(buf),
+              "%d/4 AAN",
+              count
+            );
+
+            return std::string(buf);
+
+
+
+  # --------------------------------------------------------------------------
+  # AUTOMATISCHE DISPLAYHELDERHEID
+  # 06:00-21:59 = 85%, 22:00-23:59 = 30%, 00:00-05:59 = 15%
+  # --------------------------------------------------------------------------
+
+  - id: update_auto_brightness
+    then:
+      - if:
+          condition:
+            lambda: |-
+              auto now = id(ha_time).now();
+              return now.is_valid() && now.hour >= 6 && now.hour < 22;
+          then:
+            - number.set:
+                id: display_brightness
+                value: 85
+          else:
+            - if:
+                condition:
+                  lambda: |-
+                    auto now = id(ha_time).now();
+                    return now.is_valid() && now.hour >= 22;
+                then:
+                  - number.set:
+                      id: display_brightness
+                      value: 30
+                else:
+                  - number.set:
+                      id: display_brightness
+                      value: 15
+
+
+  # --------------------------------------------------------------------------
+  # HOME ASSISTANT VERBINDING
+  # --------------------------------------------------------------------------
+
+  - id: update_ha_connection
+    then:
+      - if:
+          condition:
+            api.connected:
+              state_subscription_only: true
+          then:
+            - lvgl.widget.update:
+                id: ha_status_dot
+                bg_color: color_green
+            - lvgl.label.update:
+                id: ha_status_label
+                text_color: color_green
+          else:
+            - lvgl.widget.update:
+                id: ha_status_dot
+                bg_color: color_red
+            - lvgl.label.update:
+                id: ha_status_label
+                text_color: color_red
+
+
+  # --------------------------------------------------------------------------
+  # ACTIEVE RADIOZENDER
+  # --------------------------------------------------------------------------
+
+  - id: update_music_cards
+    then:
+      # Alles eerst terug naar standaard
+      - lvgl.widget.update:
+          id: btn_music_538
+          bg_color: color_bg_card
+          border_color: color_border
+      - lvgl.widget.update:
+          id: btn_music_3fm
+          bg_color: color_bg_card
+          border_color: color_border
+      - lvgl.widget.update:
+          id: btn_music_qmusic
+          bg_color: color_bg_card
+          border_color: color_border
+      - lvgl.widget.update:
+          id: btn_music_veronica
+          bg_color: color_bg_card
+          border_color: color_border
+      - lvgl.widget.update:
+          id: btn_music_bingo_fm
+          bg_color: color_bg_card
+          border_color: color_border
+      - lvgl.widget.update:
+          id: btn_music_sterren_nl
+          bg_color: color_bg_card
+          border_color: color_border
+
+      - lvgl.label.update:
+          id: lbl_music_538_status
+          text: "AFSPELEN"
+      - lvgl.label.update:
+          id: lbl_music_3fm_status
+          text: "AFSPELEN"
+      - lvgl.label.update:
+          id: lbl_music_qmusic_status
+          text: "AFSPELEN"
+      - lvgl.label.update:
+          id: lbl_music_veronica_status
+          text: "AFSPELEN"
+      - lvgl.label.update:
+          id: lbl_music_bingo_fm_status
+          text: "AFSPELEN"
+      - lvgl.label.update:
+          id: lbl_music_sterren_nl_status
+          text: "AFSPELEN"
+
+      # Alleen markeren wanneer de speler echt speelt
+      - if:
+          condition:
+            lambda: |-
+              return id(media_player_state).state == "playing" &&
+                     id(media_player_title).state.find("538") != std::string::npos;
+          then:
+            - lvgl.widget.update:
+                id: btn_music_538
+                bg_color: color_teal_dim
+                border_color: color_teal
+            - lvgl.label.update:
+                id: lbl_music_538_status
+                text: "SPEELT"
+
+      - if:
+          condition:
+            lambda: |-
+              const auto &t = id(media_player_title).state;
+              return id(media_player_state).state == "playing" &&
+                     (t.find("3FM") != std::string::npos ||
+                      t.find("3fm") != std::string::npos ||
+                      t.find("NPO 3FM") != std::string::npos);
+          then:
+            - lvgl.widget.update:
+                id: btn_music_3fm
+                bg_color: color_teal_dim
+                border_color: color_teal
+            - lvgl.label.update:
+                id: lbl_music_3fm_status
+                text: "SPEELT"
+
+      - if:
+          condition:
+            lambda: |-
+              const auto &t = id(media_player_title).state;
+              return id(media_player_state).state == "playing" &&
+                     (t.find("Qmusic") != std::string::npos || t.find("qmusic") != std::string::npos || t.find("Q Music") != std::string::npos);
+          then:
+            - lvgl.widget.update:
+                id: btn_music_qmusic
+                bg_color: color_teal_dim
+                border_color: color_teal
+            - lvgl.label.update:
+                id: lbl_music_qmusic_status
+                text: "SPEELT"
+
+      - if:
+          condition:
+            lambda: |-
+              const auto &t = id(media_player_title).state;
+              return id(media_player_state).state == "playing" &&
+                     (t.find("Veronica") != std::string::npos || t.find("veronica") != std::string::npos);
+          then:
+            - lvgl.widget.update:
+                id: btn_music_veronica
+                bg_color: color_teal_dim
+                border_color: color_teal
+            - lvgl.label.update:
+                id: lbl_music_veronica_status
+                text: "SPEELT"
+
+      - if:
+          condition:
+            lambda: |-
+              const auto &t = id(media_player_title).state;
+              return id(media_player_state).state == "playing" &&
+                     (t.find("Bingo FM") != std::string::npos || t.find("BingoFM") != std::string::npos || t.find("bingo") != std::string::npos);
+          then:
+            - lvgl.widget.update:
+                id: btn_music_bingo_fm
+                bg_color: color_teal_dim
+                border_color: color_teal
+            - lvgl.label.update:
+                id: lbl_music_bingo_fm_status
+                text: "SPEELT"
+
+      - if:
+          condition:
+            lambda: |-
+              const auto &t = id(media_player_title).state;
+              return id(media_player_state).state == "playing" &&
+                     (t.find("Sterren NL") != std::string::npos || t.find("SterrenNL") != std::string::npos || t.find("sterren") != std::string::npos);
+          then:
+            - lvgl.widget.update:
+                id: btn_music_sterren_nl
+                bg_color: color_teal_dim
+                border_color: color_teal
+            - lvgl.label.update:
+                id: lbl_music_sterren_nl_status
+                text: "SPEELT"
+
+
+  # --------------------------------------------------------------------------
+  # HUISSTATUS
+  # --------------------------------------------------------------------------
+
+  - id: update_house_cards
+    then:
+      - if:
+          condition:
+            lambda: 'return id(front_door_lock_state).state == "locked";'
+          then:
+            - lvgl.label.update:
+                id: lbl_house_lock
+                text: "Vergrendeld"
+                text_color: color_green
+            - lvgl.label.update:
+                id: lbl_lock_popup_state
+                text: "Vergrendeld"
+                text_color: color_green
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(front_door_lock_state).state == "unlocked";'
+                then:
+                  - lvgl.label.update:
+                      id: lbl_house_lock
+                      text: "Ontgrendeld"
+                      text_color: color_red
+                  - lvgl.label.update:
+                      id: lbl_lock_popup_state
+                      text: "Ontgrendeld"
+                      text_color: color_red
+                else:
+                  - lvgl.label.update:
+                      id: lbl_house_lock
+                      text: !lambda |-
+                        return id(front_door_lock_state).state;
+                      text_color: color_text_secondary
+                  - lvgl.label.update:
+                      id: lbl_lock_popup_state
+                      text: !lambda |-
+                        return id(front_door_lock_state).state;
+                      text_color: color_text_secondary
+
+      - if:
+          condition:
+            lambda: 'return id(washing_machine_state).state == "on";'
+          then:
+            - lvgl.label.update:
+                id: lbl_house_washing_machine
+                text: "Aan"
+                text_color: color_amber
+            - lvgl.label.update:
+                id: lbl_washing_popup_status
+                text: "Aan"
+                text_color: color_amber
+          else:
+            - lvgl.label.update:
+                id: lbl_house_washing_machine
+                text: "Uit"
+                text_color: color_text_secondary
+            - lvgl.label.update:
+                id: lbl_washing_popup_status
+                text: "Uit"
+                text_color: color_text_secondary
+
+
+
+
+  # --------------------------------------------------------------------------
+  # WASMACHINE POPUP
+  # --------------------------------------------------------------------------
+
+  - id: update_washing_machine_popup
+    then:
+
+      # Status
+      - if:
+          condition:
+            lambda: 'return id(washing_machine_state).state == "on";'
+          then:
+            - lvgl.label.update:
+                id: lbl_washing_popup_status
+                text: "Aan"
+                text_color: color_amber
+          else:
+            - lvgl.label.update:
+                id: lbl_washing_popup_status
+                text: "Uit"
+                text_color: color_text_secondary
+
+      # Programma — volledige vertaling van de HA enum-opties naar Nederlands
+      - lvgl.label.update:
+          id: lbl_washing_popup_program
+          text: !lambda |-
+            std::string value = id(washing_machine_program).state;
+
+            if (value.empty() || value == "unknown" || value == "unavailable")
+              return std::string("-");
+
+            std::string p = value;
+            for (auto &c : p)
+              c = tolower(c);
+
+            if (p == "automatic_plus")
+              return std::string("Automatic Plus");
+
+            if (p == "bed_linen")
+              return std::string("Beddengoed");
+
+            if (p == "clean_machine")
+              return std::string("Machine reinigen");
+
+            if (p == "cool_air")
+              return std::string("Koude lucht");
+
+            if (p == "cottonrepair")
+              return std::string("CottonRepair");
+
+            if (p == "cottons")
+              return std::string("Katoen");
+
+            if (p == "cottons_eco")
+              return std::string("Katoen Eco");
+
+            if (p == "cottons_hygiene")
+              return std::string("Katoen Hygiëne");
+
+            if (p == "curtains")
+              return std::string("Gordijnen");
+
+            if (p == "dark_garments")
+              return std::string("Donkere was");
+
+            if (p == "dark_jeans")
+              return std::string("Donkere jeans");
+
+            if (p == "delicates")
+              return std::string("Fijne was");
+
+            if (p == "denim")
+              return std::string("Jeans");
+
+            if (p == "down_duvets")
+              return std::string("Donzen dekbedden");
+
+            if (p == "down_filled_items")
+              return std::string("Dons");
+
+            if (p == "drain_spin")
+              return std::string("Pompen / Centrif.");
+
+            if (p == "easy_care")
+              return std::string("Kreukherstellend");
+
+            if (p == "eco_40_60")
+              return std::string("ECO 40-60");
+
+            if (p == "express_20")
+              return std::string("Express 20");
+
+            if (p == "first_wash")
+              return std::string("Nieuwe kleding");
+
+            if (p == "freshen_up")
+              return std::string("Opfrissen");
+
+            if (p == "game_pieces")
+              return std::string("Speelgoed");
+
+            if (p == "minimum_iron")
+              return std::string("Kreukherstellend");
+
+            if (p == "no_program")
+              return std::string("Geen programma");
+
+            if (p == "normal")
+              return std::string("Normaal");
+
+            if (p == "outdoor_garments")
+              return std::string("Outdoorkleding");
+
+            if (p == "outerwear")
+              return std::string("Outdoor");
+
+            if (p == "pillows")
+              return std::string("Hoofdkussens");
+
+            if (p == "powerfresh")
+              return std::string("PowerFresh");
+
+            if (p == "pre_ironing")
+              return std::string("Voorstrijken");
+
+            if (p == "proofing")
+              return std::string("Impregneren");
+
+            if (p == "quick_intense")
+              return std::string("Quick Intense");
+
+            if (p == "quick_power_wash")
+              return std::string("QuickPowerWash");
+
+            if (p == "rinse")
+              return std::string("Spoelen");
+
+            if (p == "rinse_out_lint")
+              return std::string("Pluizen spoelen");
+
+            if (p == "separate_rinse_starch")
+              return std::string("Spoelen / Stijven");
+
+            if (p == "shirts")
+              return std::string("Overhemden");
+
+            if (p == "silks")
+              return std::string("Zijde");
+
+            if (p == "smartmatic")
+              return std::string("SmartMatic");
+
+            if (p == "sportswear")
+              return std::string("Sportkleding");
+
+            if (p == "starch")
+              return std::string("Stijven");
+
+            if (p == "steam_care")
+              return std::string("Stoomverzorging");
+
+            if (p == "stuffed_toys")
+              return std::string("Knuffels");
+
+            if (p == "table_linen")
+              return std::string("Tafellinnen");
+
+            if (p == "trainers")
+              return std::string("Sportschoenen");
+
+            if (p == "trainers_refresh")
+              return std::string("Schoenen opfrissen");
+
+            if (p == "warm_air")
+              return std::string("Warme lucht");
+
+            if (p == "woollens")
+              return std::string("Wol");
+
+            // Onbekende toekomstige waarde:
+            // underscores vervangen door spaties zodat het toch leesbaar blijft.
+            for (auto &c : value) {
+              if (c == '_')
+                c = ' ';
+            }
+
+            return value;
+
+      # Temperatuur
+      - lvgl.label.update:
+          id: lbl_washing_popup_temperature
+          text: !lambda |-
+            float value = id(washing_machine_temperature).state;
+
+            if (isnan(value))
+              return std::string("-");
+
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.0f°C", value);
+            return std::string(buf);
+
+      # Nog te gaan — officiële Miele Remaining time sensor (minuten)
+      - lvgl.label.update:
+          id: lbl_washing_popup_end_time
+          text: !lambda |-
+            if (id(washing_machine_state).state != "on")
+              return std::string("-");
+
+            float value = id(washing_machine_remaining_time).state;
+
+            if (isnan(value) || value < 0)
+              return std::string("-");
+
+            int total_minutes = (int) lroundf(value);
+            int hours = total_minutes / 60;
+            int minutes = total_minutes % 60;
+
+            char buf[24];
+
+            if (hours <= 0) {
+              snprintf(buf, sizeof(buf), "%d min", minutes);
+            } else if (minutes == 0) {
+              snprintf(buf, sizeof(buf), "%du", hours);
+            } else {
+              snprintf(buf, sizeof(buf), "%du %02dm", hours, minutes);
+            }
+
+            return std::string(buf);
+
+
+# ============================================================================
+# LVGL
+# ============================================================================
+
+lvgl:
+
+  rotation: 180
+
+  theme:
+    obj:
+      scrollbar_mode: "OFF"
+      pad_all: 0
+
+
+  displays:
+    - cyd_display
+
+
+  touchscreens:
+    - cyd_touch
+
+
+  color_depth: 16
+  buffer_size: 25%
+
+  # Na 1 minuut zonder aanraking terug naar Home.
+  # Op de Audio-pagina blijft hij staan zolang media player 'playing' is.
+  on_idle:
+    timeout: 1min
+    then:
+      - if:
+          condition:
+            not:
+              lvgl.page.is_showing: page_weather
+          then:
+            - if:
+                condition:
+                  lvgl.page.is_showing: page_audio
+                then:
+                  - if:
+                      condition:
+                        lambda: 'return id(media_player_state).state != "playing";'
+                      then:
+                        - lvgl.page.show:
+                            id: page_weather
+                            animation: MOVE_RIGHT
+                            time: 300ms
+                else:
+                  - lvgl.widget.hide: lock_popup_overlay
+                  - lvgl.widget.hide: washing_popup_overlay
+                  - lvgl.widget.hide: guest_wifi_overlay
+                  - lvgl.widget.hide: light_living_popup_overlay
+                  - lvgl.widget.hide: light_kitchen_popup_overlay
+                  - lvgl.widget.hide: light_office_popup_overlay
+                  - lvgl.widget.hide: light_dressoir_popup_overlay
+                  - lvgl.page.show:
+                      id: page_weather
+                      animation: MOVE_RIGHT
+                      time: 300ms
+
+
+  # --------------------------------------------------------------------------
+  # STYLES
+  # --------------------------------------------------------------------------
+
+  style_definitions:
+
+    - id: style_card
+      bg_color: color_bg_card
+      bg_opa: COVER
+      radius: 10
+      border_width: 1
+      border_color: color_border
+      pad_all: 8
+      scrollbar_mode: "OFF"
+
+
+    - id: style_card_teal
+      bg_color: color_teal_dim
+      bg_opa: COVER
+      radius: 8
+      border_width: 1
+      border_color: color_teal
+      pad_all: 6
+      scrollbar_mode: "OFF"
+      
+
+  # --------------------------------------------------------------------------
+  # TOP LAYER — PAGE DOTS
+  # --------------------------------------------------------------------------
+
+  top_layer:
+
+    widgets:
+
+      - obj:
+          id: dot_0
+          x: 123
+          y: 231
+          width: 10
+          height: 6
+          radius: 3
+          bg_color: color_teal
+          bg_opa: COVER
+          border_width: 0
+          on_click:
+            then:
+              - lvgl.page.show:
+                  id: page_weather
+                  animation: MOVE_RIGHT
+                  time: 300ms
+
+      - obj:
+          id: dot_1
+          x: 139
+          y: 231
+          width: 10
+          height: 6
+          radius: 3
+          bg_color: color_bg_card_active
+          bg_opa: COVER
+          border_width: 0
+          on_click:
+            then:
+              - lvgl.page.show:
+                  id: page_lights
+                  animation: MOVE_LEFT
+                  time: 300ms
+
+      - obj:
+          id: dot_2
+          x: 155
+          y: 231
+          width: 10
+          height: 6
+          radius: 3
+          bg_color: color_bg_card_active
+          bg_opa: COVER
+          border_width: 0
+          on_click:
+            then:
+              - lvgl.page.show:
+                  id: page_house
+                  animation: MOVE_LEFT
+                  time: 300ms
+
+      - obj:
+          id: dot_3
+          x: 171
+          y: 231
+          width: 10
+          height: 6
+          radius: 3
+          bg_color: color_bg_card_active
+          bg_opa: COVER
+          border_width: 0
+          on_click:
+            then:
+              - lvgl.page.show:
+                  id: page_music
+                  animation: MOVE_LEFT
+                  time: 300ms
+
+      - obj:
+          id: dot_4
+          x: 187
+          y: 231
+          width: 10
+          height: 6
+          radius: 3
+          bg_color: color_bg_card_active
+          bg_opa: COVER
+          border_width: 0
+          on_click:
+            then:
+              - lvgl.page.show:
+                  id: page_audio
+                  animation: MOVE_LEFT
+                  time: 300ms
+
+      # ------------------------------------------------------------
+      # GASTEN-WIFI POPUP
+      # ------------------------------------------------------------
+      - obj:
+          id: guest_wifi_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 80%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                id: guest_wifi_card
+                x: 8
+                y: 8
+                width: 304
+                height: 224
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 14
+                pad_all: 0
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "Gasten WiFi"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 14
+                      y: 8
+
+                  - label:
+                      text: "Scan om te verbinden met ${guest_wifi_ssid}"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 14
+                      y: 28
+
+                  - button:
+                      id: btn_guest_wifi_close
+                      x: 264
+                      y: 5
+                      width: 32
+                      height: 30
+                      bg_color: color_bg_card
+                      bg_opa: COVER
+                      border_width: 1
+                      border_color: color_border
+                      radius: 8
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: guest_wifi_overlay
+                      widgets:
+                        - label:
+                            text: "X"
+                            text_font: font_header
+                            text_color: color_text_secondary
+                            align: CENTER
+
+                  # Witte quiet-zone rond de QR-code voor betrouwbaar scannen
+                  - obj:
+                      x: 64
+                      y: 42
+                      width: 176
+                      height: 176
+                      bg_color: 0xFFFFFF
+                      bg_opa: COVER
+                      border_width: 0
+                      radius: 6
+                      pad_all: 0
+                      scrollable: false
+                      scrollbar_mode: "OFF"
+
+                      widgets:
+                        - qrcode:
+                            id: guest_wifi_qr
+                            x: 6
+                            y: 6
+                            size: 164
+                            light_color: 0xFFFFFF
+                            dark_color: 0x000000
+                            text: "WIFI:T:WPA;S:${guest_wifi_ssid};P:${guest_wifi_password};;"
+
+
+      # ------------------------------------------------------------
+      # VOORDEUR POPUP
+      # ------------------------------------------------------------
+      - obj:
+          id: lock_popup_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 70%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                id: lock_popup_card
+                x: 20
+                y: 26
+                width: 280
+                height: 184
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 12
+                pad_all: 10
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "Voordeur"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 4
+                      y: 2
+
+                  - label:
+                      id: lbl_lock_popup_state
+                      text: "Laden..."
+                      text_font: font_body
+                      text_color: color_text_secondary
+                      align: TOP_RIGHT
+                      x: -4
+                      y: 2
+
+                  # Vergrendelen
+                  - button:
+                      width: 118
+                      height: 44
+                      x: 4
+                      y: 38
+                      styles: style_card
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: lock.lock
+                              data:
+                                entity_id: ${front_door_lock_entity}
+                          - delay: 300ms
+                          - lvgl.widget.hide: lock_popup_overlay
+                      widgets:
+                        - label:
+                            text: "VERGRENDEL"
+                            text_font: font_small
+                            text_color: color_green
+                            align: CENTER
+
+                  # Ontgrendelen
+                  - button:
+                      width: 118
+                      height: 44
+                      x: 138
+                      y: 38
+                      styles: style_card
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: lock.unlock
+                              data:
+                                entity_id: ${front_door_lock_entity}
+                          - delay: 300ms
+                          - lvgl.widget.hide: lock_popup_overlay
+                      widgets:
+                        - label:
+                            text: "ONTGRENDEL"
+                            text_font: font_small
+                            text_color: color_amber
+                            align: CENTER
+
+                  # Deur openen / latch intrekken
+                  - button:
+                      width: 252
+                      height: 44
+                      x: 4
+                      y: 92
+                      styles: style_card_teal
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: lock.open
+                              data:
+                                entity_id: ${front_door_lock_entity}
+                          - delay: 300ms
+                          - lvgl.widget.hide: lock_popup_overlay
+                      widgets:
+                        - label:
+                            text: "DEUR OPENEN"
+                            text_font: font_header
+                            text_color: color_teal
+                            align: CENTER
+
+                  # Sluiten
+                  - button:
+                      width: 252
+                      height: 30
+                      x: 4
+                      y: 146
+                      styles: style_card
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: lock_popup_overlay
+                      widgets:
+                        - label:
+                            text: "SLUITEN"
+                            text_font: font_small
+                            text_color: color_text_secondary
+                            align: CENTER
+
+
+      # ------------------------------------------------------------
+      # WASMACHINE POPUP
+      # ------------------------------------------------------------
+      - obj:
+          id: washing_popup_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 70%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                id: washing_popup_card
+                x: 20
+                y: 18
+                width: 280
+                height: 204
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 12
+                pad_all: 10
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "Wasmachine"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 4
+                      y: 2
+
+                  - label:
+                      text: "DETAILS"
+                      text_font: font_small
+                      text_color: color_teal
+                      align: TOP_RIGHT
+                      x: -4
+                      y: 4
+
+                  # Status
+                  - label:
+                      text: "STATUS"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 4
+                      y: 36
+
+                  - label:
+                      id: lbl_washing_popup_status
+                      text: "Laden..."
+                      text_font: font_body
+                      text_color: color_text_secondary
+                      align: TOP_RIGHT
+                      x: -4
+                      y: 32
+
+                  # Programma
+                  - label:
+                      text: "PROGRAMMA"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 4
+                      y: 67
+
+                  - label:
+                      id: lbl_washing_popup_program
+                      text: "-"
+                      text_font: font_body
+                      text_color: color_text_primary
+                      width: 160
+                      long_mode: DOT
+                      align: TOP_RIGHT
+                      text_align: RIGHT
+                      x: -4
+                      y: 63
+
+                  # Temperatuur
+                  - label:
+                      text: "TEMPERATUUR"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 4
+                      y: 98
+
+                  - label:
+                      id: lbl_washing_popup_temperature
+                      text: "-"
+                      text_font: font_body
+                      text_color: color_text_primary
+                      align: TOP_RIGHT
+                      x: -4
+                      y: 94
+
+                  # Resterende tijd
+                  - label:
+                      text: "NOG TE GAAN"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 4
+                      y: 129
+
+                  - label:
+                      id: lbl_washing_popup_end_time
+                      text: "-"
+                      text_font: font_body
+                      text_color: color_teal
+                      width: 140
+                      align: TOP_RIGHT
+                      text_align: RIGHT
+                      x: -4
+                      y: 125
+
+                  # Sluiten
+                  - button:
+                      width: 252
+                      height: 34
+                      x: 4
+                      y: 155
+                      styles: style_card
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: washing_popup_overlay
+                      widgets:
+                        - label:
+                            text: "SLUITEN"
+                            text_font: font_small
+                            text_color: color_text_secondary
+                            align: CENTER
+
+
+      # ------------------------------------------------------------
+      # DIMMER POPUP — Living room light
+      # ------------------------------------------------------------
+      - obj:
+          id: light_living_popup_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 80%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                x: 14
+                y: 28
+                width: 292
+                height: 184
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 12
+                pad_all: 12
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "${light_living_room_name}"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 2
+                      y: 0
+
+                  - label:
+                      id: lbl_light_living_popup_pct
+                      text: "--%"
+                      text_font: font_header
+                      text_color: color_teal
+                      align: TOP_RIGHT
+                      x: -2
+                      y: 0
+
+                  - label:
+                      text: "HELDERHEID"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 2
+                      y: 39
+
+                  - slider:
+                      id: slider_light_living_dimmer
+                      x: 6
+                      y: 63
+                      width: 252
+                      height: 22
+                      min_value: 0
+                      max_value: 255
+                      value: 255
+                      bg_color: color_bg_card_active
+                      indicator:
+                        bg_color: color_teal
+                      knob:
+                        bg_color: color_teal
+                      on_value:
+                        then:
+                          - lvgl.label.update:
+                              id: lbl_light_living_popup_pct
+                              text:
+                                format: "%.0f%%"
+                                args: ["(x / 255.0f) * 100.0f"]
+                      on_release:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_living_room}
+                                brightness: !lambda return int(x);
+
+                  - label:
+                      text: "Schuif om de lamp te dimmen"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      align: TOP_MID
+                      y: 101
+
+                  - button:
+                      width: 252
+                      height: 34
+                      x: 6
+                      y: 128
+                      styles: style_card
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: light_living_popup_overlay
+                      widgets:
+                        - label:
+                            text: "SLUITEN"
+                            text_font: font_small
+                            text_color: color_text_secondary
+                            align: CENTER
+
+      # ------------------------------------------------------------
+      # DIMMER POPUP — Kitchen light
+      # ------------------------------------------------------------
+      - obj:
+          id: light_kitchen_popup_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 80%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                x: 14
+                y: 28
+                width: 292
+                height: 184
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 12
+                pad_all: 12
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "${light_kitchen_name}"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 2
+                      y: 0
+
+                  - label:
+                      id: lbl_light_kitchen_popup_pct
+                      text: "--%"
+                      text_font: font_header
+                      text_color: color_teal
+                      align: TOP_RIGHT
+                      x: -2
+                      y: 0
+
+                  - label:
+                      text: "HELDERHEID"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 2
+                      y: 39
+
+                  - slider:
+                      id: slider_light_kitchen_dimmer
+                      x: 6
+                      y: 63
+                      width: 252
+                      height: 22
+                      min_value: 0
+                      max_value: 255
+                      value: 255
+                      bg_color: color_bg_card_active
+                      indicator:
+                        bg_color: color_teal
+                      knob:
+                        bg_color: color_teal
+                      on_value:
+                        then:
+                          - lvgl.label.update:
+                              id: lbl_light_kitchen_popup_pct
+                              text:
+                                format: "%.0f%%"
+                                args: ["(x / 255.0f) * 100.0f"]
+                      on_release:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_kitchen}
+                                brightness: !lambda return int(x);
+
+                  - label:
+                      text: "Schuif om de lamp te dimmen"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      align: TOP_MID
+                      y: 101
+
+                  - button:
+                      width: 252
+                      height: 34
+                      x: 6
+                      y: 128
+                      styles: style_card
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: light_kitchen_popup_overlay
+                      widgets:
+                        - label:
+                            text: "SLUITEN"
+                            text_font: font_small
+                            text_color: color_text_secondary
+                            align: CENTER
+
+      # ------------------------------------------------------------
+      # DIMMER + RGB POPUP — RGB light
+      # ------------------------------------------------------------
+      - obj:
+          id: light_office_popup_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 80%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                x: 10
+                y: 10
+                width: 300
+                height: 220
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 12
+                pad_all: 10
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "${light_office_name}"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 2
+                      y: 0
+
+                  - label:
+                      id: lbl_light_office_popup_pct
+                      text: "--%"
+                      text_font: font_header
+                      text_color: color_teal
+                      align: TOP_RIGHT
+                      x: -2
+                      y: 0
+
+                  - label:
+                      text: "HELDERHEID"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 2
+                      y: 31
+
+                  - slider:
+                      id: slider_light_office_dimmer
+                      x: 6
+                      y: 49
+                      width: 258
+                      height: 20
+                      min_value: 0
+                      max_value: 255
+                      value: 255
+                      bg_color: color_bg_card_active
+                      indicator:
+                        bg_color: color_teal
+                      knob:
+                        bg_color: color_teal
+                      on_value:
+                        then:
+                          - lvgl.label.update:
+                              id: lbl_light_office_popup_pct
+                              text:
+                                format: "%.0f%%"
+                                args: ["(x / 255.0f) * 100.0f"]
+                      on_release:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                brightness: !lambda return int(x);
+
+                  - label:
+                      text: "KLEUR"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 2
+                      y: 82
+
+                  # Zes kleurvlakken
+                  - button:
+                      x: 6
+                      y: 101
+                      width: 36
+                      height: 32
+                      bg_color: 0xFF0000
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "red"
+
+                  - button:
+                      x: 50
+                      y: 101
+                      width: 36
+                      height: 32
+                      bg_color: 0xFF8C00
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "orange"
+
+                  - button:
+                      x: 94
+                      y: 101
+                      width: 36
+                      height: 32
+                      bg_color: 0xFFD93D
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "yellow"
+
+                  - button:
+                      x: 138
+                      y: 101
+                      width: 36
+                      height: 32
+                      bg_color: 0x00C853
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "green"
+
+                  - button:
+                      x: 182
+                      y: 101
+                      width: 36
+                      height: 32
+                      bg_color: 0x2979FF
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "blue"
+
+                  - button:
+                      x: 226
+                      y: 101
+                      width: 36
+                      height: 32
+                      bg_color: 0xAA00FF
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "purple"
+
+                  # Wit / warm wit
+                  - button:
+                      x: 6
+                      y: 141
+                      width: 124
+                      height: 30
+                      bg_color: 0xF5F5F5
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_name: "white"
+                      widgets:
+                        - label:
+                            text: "WIT"
+                            text_font: font_small
+                            text_color: 0x222222
+                            align: CENTER
+
+                  - button:
+                      x: 138
+                      y: 141
+                      width: 124
+                      height: 30
+                      bg_color: 0xFFD6A0
+                      border_width: 0
+                      radius: 7
+                      on_click:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_office}
+                                color_temp_kelvin: "2400"
+                      widgets:
+                        - label:
+                            text: "WARM WIT"
+                            text_font: font_small
+                            text_color: 0x222222
+                            align: CENTER
+
+                  - button:
+                      width: 256
+                      height: 28
+                      x: 6
+                      y: 178
+                      styles: style_card
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: light_office_popup_overlay
+                      widgets:
+                        - label:
+                            text: "SLUITEN"
+                            text_font: font_small
+                            text_color: color_text_secondary
+                            align: CENTER
+
+      # ------------------------------------------------------------
+      # DIMMER POPUP — Light 4
+      # ------------------------------------------------------------
+      - obj:
+          id: light_dressoir_popup_overlay
+          hidden: true
+          x: 0
+          y: 0
+          width: 320
+          height: 240
+          bg_color: 0x000000
+          bg_opa: 80%
+          border_width: 0
+          radius: 0
+          pad_all: 0
+          scrollable: false
+          scrollbar_mode: "OFF"
+
+          widgets:
+            - obj:
+                x: 14
+                y: 28
+                width: 292
+                height: 184
+                bg_color: color_bg
+                bg_opa: COVER
+                border_width: 1
+                border_color: color_teal
+                radius: 12
+                pad_all: 12
+                scrollable: false
+                scrollbar_mode: "OFF"
+
+                widgets:
+                  - label:
+                      text: "${light_dressoir_name}"
+                      text_font: font_header
+                      text_color: color_text_primary
+                      x: 2
+                      y: 0
+
+                  - label:
+                      id: lbl_light_dressoir_popup_pct
+                      text: "--%"
+                      text_font: font_header
+                      text_color: color_teal
+                      align: TOP_RIGHT
+                      x: -2
+                      y: 0
+
+                  - label:
+                      text: "HELDERHEID"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      x: 2
+                      y: 39
+
+                  - slider:
+                      id: slider_light_dressoir_dimmer
+                      x: 6
+                      y: 63
+                      width: 252
+                      height: 22
+                      min_value: 0
+                      max_value: 255
+                      value: 255
+                      bg_color: color_bg_card_active
+                      indicator:
+                        bg_color: color_teal
+                      knob:
+                        bg_color: color_teal
+                      on_value:
+                        then:
+                          - lvgl.label.update:
+                              id: lbl_light_dressoir_popup_pct
+                              text:
+                                format: "%.0f%%"
+                                args: ["(x / 255.0f) * 100.0f"]
+                      on_release:
+                        then:
+                          - homeassistant.action:
+                              action: light.turn_on
+                              data:
+                                entity_id: ${light_dressoir}
+                                brightness: !lambda return int(x);
+
+                  - label:
+                      text: "Schuif om de lamp te dimmen"
+                      text_font: font_small
+                      text_color: color_text_secondary
+                      align: TOP_MID
+                      y: 101
+
+                  - button:
+                      width: 252
+                      height: 34
+                      x: 6
+                      y: 128
+                      styles: style_card
+                      pad_all: 0
+                      on_click:
+                        then:
+                          - lvgl.widget.hide: light_dressoir_popup_overlay
+                      widgets:
+                        - label:
+                            text: "SLUITEN"
+                            text_font: font_small
+                            text_color: color_text_secondary
+                            align: CENTER
+
+
+  page_wrap: false
+
+
+  # ==========================================================================
+  # PAGES
+  # ==========================================================================
+
+  pages:
+
+    # ========================================================================
+    # PAGE 1 — WEATHER
+    # ========================================================================
+
+    - id: page_weather
+
+      on_load:
+        - script.execute:
+            id: update_dots
+            page: 0
+
+
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+              animation: MOVE_LEFT
+              time: 300ms
+
+
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+              animation: MOVE_RIGHT
+              time: 300ms
+
+
+      bg_color: color_bg
+      bg_opa: COVER
+      pad_all: 0
+
+
+      widgets:
+
+        # Header
+        - obj:
+            width: 320
+            height: 22
+            x: 0
+            y: 0
+
+            pad_left: 14
+            pad_right: 14
+
+            bg_opa: TRANSP
+            border_width: 0
+
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+
+            widgets:
+
+              - label:
+                  id: lbl_clock
+                  text: "-- -- --:--"
+                  text_font: font_small
+                  text_color: color_text_secondary
+
+              - obj:
+                  width: 72
+                  height: 18
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+
+                  widgets:
+                    # Tik op het WiFi-icoon voor de gasten-QR
+                    - button:
+                        id: btn_guest_wifi
+                        x: 0
+                        y: 0
+                        width: 26
+                        height: 18
+                        bg_opa: TRANSP
+                        border_width: 0
+                        radius: 0
+                        pad_all: 0
+                        on_click:
+                          then:
+                            - lvgl.widget.show: guest_wifi_overlay
+                        widgets:
+                          - label:
+                              text: "\U000F05A9"
+                              text_font: font_icons_18
+                              text_color: color_teal
+                              align: CENTER
+
+                    - obj:
+                        id: ha_status_dot
+                        x: 36
+                        y: 5
+                        width: 9
+                        height: 9
+                        radius: 5
+                        bg_color: color_red
+                        bg_opa: COVER
+                        border_width: 0
+
+                    - label:
+                        id: ha_status_label
+                        text: "HA"
+                        text_font: font_small
+                        text_color: color_red
+                        x: 49
+                        y: 1
+
+
+        # Main weather
+        - obj:
+            width: 320
+            height: 68
+            x: 0
+            y: 22
+
+            pad_left: 16
+            pad_right: 16
+
+            bg_opa: TRANSP
+            border_width: 0
+
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_cross: START
+
+            widgets:
+
+              - label:
+                  id: lbl_weather_icon
+                  text: "\U000F0595"
+                  text_font: font_icons_40
+                  text_color: color_amber
+                  width: 48
+
+
+              - obj:
+                  width: 130
+                  height: 65
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  pad_left: 4
+
+                  widgets:
+
+                    - label:
+                        id: lbl_weather_temp
+                        text: "--"
+                        text_font: font_temp_large
+                        text_color: color_text_primary
+                        x: 0
+                        y: 0
+
+                    - label:
+                        text: "°C"
+                        text_font: font_body
+                        text_color: color_text_secondary
+                        x: 52
+                        y: 8
+
+                    - label:
+                        id: lbl_weather_condition
+                        text: "Laden..."
+                        text_font: font_small
+                        text_color: color_text_secondary
+                        x: 0
+                        y: 44
+
+
+              - obj:
+                  width: 90
+                  height: 65
+
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+
+                  widgets:
+
+                    - label:
+                        text: "GEVOEL"
+                        text_font: font_small
+                        text_color: color_text_secondary
+                        align: TOP_RIGHT
+                        y: 0
+
+                    - label:
+                        id: lbl_feels_like
+                        text: "--°C"
+                        text_font: font_body
+                        text_color: color_text_primary
+                        align: TOP_RIGHT
+                        y: 13
+
+                    - label:
+                        text: "LUCHTVOCHT."
+                        text_font: font_small
+                        text_color: color_text_secondary
+                        align: TOP_RIGHT
+                        y: 32
+
+                    - label:
+                        id: lbl_humidity_val
+                        text: "0%"
+                        text_font: font_body
+                        text_color: color_text_primary
+                        align: TOP_RIGHT
+                        y: 45
+
+
+        # Weather stats
+        - obj:
+            width: 320
+            height: 46
+            x: 0
+            y: 94
+
+            pad_left: 14
+            pad_right: 14
+
+            bg_opa: TRANSP
+            border_width: 0
+
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+
+            widgets:
+
+              - obj:
+                  styles: style_card_teal
+                  width: 92
+                  height: 42
+
+                  widgets:
+
+                    - label:
+                        text: "WIND"
+                        text_font: font_small
+                        text_color: color_text_secondary
+                        x: 0
+                        y: 0
+
+                    - label:
+                        id: lbl_wind_val
+                        text: "-- km/h"
+                        text_font: font_body
+                        text_color: color_text_primary
+                        x: 0
+                        y: 16
+
+
+              - obj:
+                  styles: style_card_teal
+                  width: 92
+                  height: 42
+
+                  widgets:
+
+                    - label:
+                        text: "LUCHTDRUK"
+                        text_font: font_small
+                        text_color: color_text_secondary
+                        x: 0
+                        y: 0
+
+                    - label:
+                        id: lbl_pressure_val
+                        text: "-- hPa"
+                        text_font: font_body
+                        text_color: color_text_primary
+                        x: 0
+                        y: 16
+
+
+              - obj:
+                  styles: style_card_teal
+                  width: 92
+                  height: 42
+
+                  widgets:
+
+                    - label:
+                        text: "RICHTING"
+                        text_font: font_small
+                        text_color: color_text_secondary
+                        x: 0
+                        y: 0
+
+                    - label:
+                        id: lbl_wind_direction_val
+                        text: "--"
+                        text_font: font_body
+                        text_color: color_text_primary
+                        x: 0
+                        y: 16
+
+
+
+
+        # Begroeting + datum + grote klok
+        - obj:
+            width: 292
+            height: 74
+            x: 14
+            y: 145
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+
+            widgets:
+              - label:
+                  id: lbl_greeting
+                  text: "Welkom"
+                  text_font: font_greeting
+                  text_color: color_teal
+                  width: 292
+                  text_align: CENTER
+                  align: TOP_MID
+                  y: 0
+
+              - label:
+                  id: lbl_greeting_date
+                  text: "--"
+                  text_font: font_greeting
+                  text_color: color_text_primary
+                  width: 292
+                  text_align: CENTER
+                  align: TOP_MID
+                  y: 23
+
+              - label:
+                  id: lbl_home_time
+                  text: "--:--"
+                  text_font: font_volume
+                  text_color: color_text_primary
+                  width: 292
+                  text_align: CENTER
+                  align: TOP_MID
+                  y: 46
+
+
+    # ========================================================================
+    # PAGE 2 — LIGHTS
+    # ========================================================================
+
+    - id: page_lights
+      scrollable: false
+      scrollbar_mode: "OFF"
+
+      on_load:
+        - script.execute:
+            id: update_dots
+            page: 1
+        - script.execute: update_light_cards
+
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+              animation: MOVE_LEFT
+              time: 300ms
+
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+              animation: MOVE_RIGHT
+              time: 300ms
+
+      bg_color: color_bg
+      bg_opa: COVER
+      pad_all: 0
+
+      widgets:
+
+        - obj:
+            width: 292
+            height: 28
+            x: 14
+            y: 2
+            pad_all: 0
+            bg_opa: TRANSP
+            border_width: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - obj:
+                  width: 112
+                  height: 24
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  scrollable: false
+                  scrollbar_mode: "OFF"
+                  layout:
+                    type: FLEX
+                    flex_flow: ROW
+                    flex_align_cross: CENTER
+                  widgets:
+                    - label:
+                        text: "\U000F0335"
+                        text_font: font_icons_18
+                        text_color: color_amber
+                    - label:
+                        text: "Verlichting"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        pad_left: 6
+
+              - label:
+                  id: lbl_lights_count
+                  text: "0/4 AAN"
+                  text_font: font_small
+                  text_color: color_teal
+
+              - button:
+                  id: btn_all_lights_off
+                  width: 72
+                  height: 24
+                  styles: style_card
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: light.turn_off
+                          data:
+                            entity_id: ${light_living_room}
+                      - homeassistant.action:
+                          action: light.turn_off
+                          data:
+                            entity_id: ${light_kitchen}
+                      - homeassistant.action:
+                          action: light.turn_off
+                          data:
+                            entity_id: ${light_office}
+                      - homeassistant.action:
+                          action: light.turn_off
+                          data:
+                            entity_id: ${light_dressoir}
+                  widgets:
+                    - label:
+                        text: "ALLES UIT"
+                        text_font: font_small
+                        text_color: color_amber
+                        align: CENTER
+
+        # Rij 1
+        - obj:
+            width: 292
+            height: 72
+            x: 14
+            y: 45
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+              - button:
+                  id: btn_light_living
+                  width: 140
+                  height: 72
+                  styles: style_card
+                  on_short_click:
+                    then:
+                      - script.execute: light_living_single_click
+
+                  on_double_click:
+                    then:
+                      - script.stop: light_living_single_click
+
+                      # Zet de popup direct op de actuele Home Assistant helderheid.
+                      - lvgl.slider.update:
+                          id: slider_light_living_dimmer
+                          value: !lambda |-
+                            if (isnan(id(brightness_living).state))
+                              return 255;
+                            return id(brightness_living).state;
+
+                      - lvgl.label.update:
+                          id: lbl_light_living_popup_pct
+                          text: !lambda |-
+                            float value = id(brightness_living).state;
+                            if (isnan(value))
+                              value = 255.0f;
+                            char buf[12];
+                            snprintf(buf, sizeof(buf), "%.0f%%", (value / 255.0f) * 100.0f);
+                            return std::string(buf);
+
+                      - lvgl.widget.show: light_living_popup_overlay
+                  widgets:
+                    - label:
+                        id: lbl_living_icon
+                        text: "\U000F0335"
+                        text_font: font_icons_18
+                        text_color: color_text_tertiary
+                        x: 0
+                        y: 5
+                    - label:
+                        id: lbl_living_name
+                        text: "${light_living_room_name}"
+                        text_font: font_body
+                        text_color: color_text_secondary
+                        x: 28
+                        y: 6
+                    - label:
+                        id: lbl_brightness_living
+                        text: "Uit"
+                        text_font: font_small
+                        text_color: color_amber
+                        x: 28
+                        y: 35
+
+              - button:
+                  id: btn_light_kitchen
+                  width: 140
+                  height: 72
+                  styles: style_card
+                  on_short_click:
+                    then:
+                      - script.execute: light_kitchen_single_click
+
+                  on_double_click:
+                    then:
+                      - script.stop: light_kitchen_single_click
+
+                      # Zet de popup direct op de actuele Home Assistant helderheid.
+                      - lvgl.slider.update:
+                          id: slider_light_kitchen_dimmer
+                          value: !lambda |-
+                            if (isnan(id(brightness_kitchen).state))
+                              return 255;
+                            return id(brightness_kitchen).state;
+
+                      - lvgl.label.update:
+                          id: lbl_light_kitchen_popup_pct
+                          text: !lambda |-
+                            float value = id(brightness_kitchen).state;
+                            if (isnan(value))
+                              value = 255.0f;
+                            char buf[12];
+                            snprintf(buf, sizeof(buf), "%.0f%%", (value / 255.0f) * 100.0f);
+                            return std::string(buf);
+
+                      - lvgl.widget.show: light_kitchen_popup_overlay
+                  widgets:
+                    - label:
+                        id: lbl_kitchen_icon
+                        text: "\U000F0335"
+                        text_font: font_icons_18
+                        text_color: color_text_tertiary
+                        x: 0
+                        y: 5
+                    - label:
+                        id: lbl_kitchen_name
+                        text: "${light_kitchen_name}"
+                        text_font: font_body
+                        text_color: color_text_secondary
+                        x: 28
+                        y: 6
+                    - label:
+                        id: lbl_brightness_kitchen
+                        text: "Uit"
+                        text_font: font_small
+                        text_color: color_amber
+                        x: 28
+                        y: 35
+
+        # Rij 2
+        - obj:
+            width: 292
+            height: 72
+            x: 14
+            y: 132
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+              - button:
+                  id: btn_light_office
+                  width: 140
+                  height: 72
+                  styles: style_card
+                  on_short_click:
+                    then:
+                      - script.execute: light_office_single_click
+
+                  on_double_click:
+                    then:
+                      - script.stop: light_office_single_click
+
+                      # Zet de popup direct op de actuele Home Assistant helderheid.
+                      - lvgl.slider.update:
+                          id: slider_light_office_dimmer
+                          value: !lambda |-
+                            if (isnan(id(brightness_office).state))
+                              return 255;
+                            return id(brightness_office).state;
+
+                      - lvgl.label.update:
+                          id: lbl_light_office_popup_pct
+                          text: !lambda |-
+                            float value = id(brightness_office).state;
+                            if (isnan(value))
+                              value = 255.0f;
+                            char buf[12];
+                            snprintf(buf, sizeof(buf), "%.0f%%", (value / 255.0f) * 100.0f);
+                            return std::string(buf);
+
+                      - lvgl.widget.show: light_office_popup_overlay
+                  widgets:
+                    - label:
+                        id: lbl_office_icon
+                        text: "\U000F0335"
+                        text_font: font_icons_18
+                        text_color: color_text_tertiary
+                        x: 0
+                        y: 5
+                    - label:
+                        id: lbl_office_name
+                        text: "${light_office_name}"
+                        text_font: font_body
+                        text_color: color_text_secondary
+                        x: 28
+                        y: 6
+                    - label:
+                        id: lbl_brightness_office
+                        text: "Uit"
+                        text_font: font_small
+                        text_color: color_amber
+                        x: 28
+                        y: 35
+
+              - button:
+                  id: btn_light_dressoir
+                  width: 140
+                  height: 72
+                  styles: style_card
+                  on_short_click:
+                    then:
+                      - script.execute: light_dressoir_single_click
+
+                  on_double_click:
+                    then:
+                      - script.stop: light_dressoir_single_click
+
+                      # Zet de popup direct op de actuele Home Assistant helderheid.
+                      - lvgl.slider.update:
+                          id: slider_light_dressoir_dimmer
+                          value: !lambda |-
+                            if (isnan(id(brightness_dressoir).state))
+                              return 255;
+                            return id(brightness_dressoir).state;
+
+                      - lvgl.label.update:
+                          id: lbl_light_dressoir_popup_pct
+                          text: !lambda |-
+                            float value = id(brightness_dressoir).state;
+                            if (isnan(value))
+                              value = 255.0f;
+                            char buf[12];
+                            snprintf(buf, sizeof(buf), "%.0f%%", (value / 255.0f) * 100.0f);
+                            return std::string(buf);
+
+                      - lvgl.widget.show: light_dressoir_popup_overlay
+                  widgets:
+                    - label:
+                        id: lbl_dressoir_icon
+                        text: "\U000F0335"
+                        text_font: font_icons_18
+                        text_color: color_text_tertiary
+                        x: 0
+                        y: 5
+                    - label:
+                        id: lbl_dressoir_name
+                        text: "${light_dressoir_name}"
+                        text_font: font_body
+                        text_color: color_text_secondary
+                        x: 28
+                        y: 6
+                    - label:
+                        id: lbl_brightness_dressoir
+                        text: "Uit"
+                        text_font: font_small
+                        text_color: color_amber
+                        x: 28
+                        y: 35
+
+
+    # ========================================================================
+    # PAGE 3 — HUIS
+    # ========================================================================
+
+    - id: page_house
+
+      on_load:
+        - script.execute:
+            id: update_dots
+            page: 2
+        - script.execute: update_house_cards
+
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+              animation: MOVE_LEFT
+              time: 300ms
+
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+              animation: MOVE_RIGHT
+              time: 300ms
+
+      bg_color: color_bg
+      bg_opa: COVER
+      pad_all: 0
+
+      widgets:
+
+        # Header
+        - obj:
+            width: 320
+            height: 28
+            x: 0
+            y: 2
+            pad_left: 16
+            pad_right: 16
+            bg_opa: TRANSP
+            border_width: 0
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - label:
+                  text: "Huis"
+                  text_font: font_header
+                  text_color: color_text_primary
+              - label:
+                  text: "STATUS"
+                  text_font: font_small
+                  text_color: color_teal
+
+        # Voordeur — tik voor bediening
+        - button:
+            id: btn_house_front_door
+            width: 292
+            height: 54
+            x: 14
+            y: 38
+            styles: style_card
+            on_click:
+              then:
+                - lvgl.widget.show: lock_popup_overlay
+            widgets:
+              - label:
+                  text: "Voordeur"
+                  text_font: font_header
+                  text_color: color_text_primary
+                  x: 4
+                  y: 5
+              - label:
+                  text: "Tik voor bediening"
+                  text_font: font_small
+                  text_color: color_text_tertiary
+                  x: 4
+                  y: 27
+              - label:
+                  id: lbl_house_lock
+                  text: "Laden..."
+                  text_font: font_body
+                  text_color: color_text_secondary
+                  align: RIGHT_MID
+                  x: -4
+
+        # Woonkamer temperatuur
+        - obj:
+            width: 292
+            height: 54
+            x: 14
+            y: 100
+            styles: style_card
+            widgets:
+              - label:
+                  text: "Woonkamer"
+                  text_font: font_header
+                  text_color: color_text_primary
+                  x: 4
+                  y: 8
+              - label:
+                  id: lbl_house_temperature
+                  text: "--.-°C"
+                  text_font: font_header
+                  text_color: color_teal
+                  align: RIGHT_MID
+                  x: -4
+
+        # Wasmachine — tik voor details
+        - button:
+            id: btn_house_washing_machine
+            width: 292
+            height: 54
+            x: 14
+            y: 162
+            styles: style_card
+            on_click:
+              then:
+                - script.execute: update_washing_machine_popup
+                - lvgl.widget.show: washing_popup_overlay
+            widgets:
+              - label:
+                  text: "Wasmachine"
+                  text_font: font_header
+                  text_color: color_text_primary
+                  x: 4
+                  y: 5
+              - label:
+                  text: "Tik voor details"
+                  text_font: font_small
+                  text_color: color_text_tertiary
+                  x: 4
+                  y: 27
+              - label:
+                  id: lbl_house_washing_machine
+                  text: "Laden..."
+                  text_font: font_body
+                  text_color: color_text_secondary
+                  align: RIGHT_MID
+                  x: -4
+
+
+    # PAGE 4 — MUZIEK
+    # ========================================================================
+
+    - id: page_music
+
+      on_load:
+        - script.execute:
+            id: update_dots
+            page: 3
+        - script.execute: update_music_cards
+
+      on_swipe_left:
+        then:
+          - lvgl.page.next:
+              animation: MOVE_LEFT
+              time: 300ms
+
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+              animation: MOVE_RIGHT
+              time: 300ms
+
+      bg_color: color_bg
+      bg_opa: COVER
+      pad_all: 0
+
+      widgets:
+
+        # Header
+        - obj:
+            width: 320
+            height: 28
+            x: 0
+            y: 2
+            pad_left: 16
+            pad_right: 16
+            bg_opa: TRANSP
+            border_width: 0
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - label:
+                  text: "Muziek"
+                  text_font: font_header
+                  text_color: color_text_primary
+
+              - button:
+                  id: btn_music_stop
+                  width: 58
+                  height: 24
+                  styles: style_card
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: media_player.media_stop
+                          data:
+                            entity_id: ${media_player_entity}
+                  widgets:
+                    - label:
+                        text: "STOP"
+                        text_font: font_small
+                        text_color: color_red
+                        align: CENTER
+
+        # Row 1 — Radio 538 / NPO 3FM
+        - obj:
+            width: 292
+            height: 58
+            x: 14
+            y: 34
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+
+              - button:
+                  id: btn_music_538
+                  width: 140
+                  height: 58
+                  styles: style_card
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: button.press
+                          data:
+                            entity_id: ${music_538}
+                      - delay: 350ms
+                      - lvgl.page.show:
+                          id: page_audio
+                          animation: MOVE_LEFT
+                          time: 300ms
+                  widgets:
+                    - label:
+                        text: "Radio 538"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        align: TOP_MID
+                        y: 4
+                    - label:
+                        id: lbl_music_538_status
+                        text: "AFSPELEN"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: BOTTOM_MID
+                        y: -4
+
+              - button:
+                  id: btn_music_3fm
+                  width: 140
+                  height: 58
+                  styles: style_card
+                  on_click:
+                    then:
+                      # NPO 3FM directly on the configured media player via TuneIn.
+                      - homeassistant.action:
+                          action: media_player.play_media
+                          data:
+                            entity_id: ${media_player_entity}
+                            media_content_id: "NPO 3FM"
+                            media_content_type: "TUNEIN"
+                      - delay: 500ms
+                      - lvgl.page.show:
+                          id: page_audio
+                          animation: MOVE_LEFT
+                          time: 300ms
+                  widgets:
+                    - label:
+                        text: "NPO 3FM"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        align: TOP_MID
+                        y: 4
+                    - label:
+                        id: lbl_music_3fm_status
+                        text: "AFSPELEN"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: BOTTOM_MID
+                        y: -4
+
+        # Row 2 — Qmusic / Veronica
+        - obj:
+            width: 292
+            height: 58
+            x: 14
+            y: 98
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+
+              - button:
+                  id: btn_music_qmusic
+                  width: 140
+                  height: 58
+                  styles: style_card
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: button.press
+                          data:
+                            entity_id: ${music_qmusic}
+                      - delay: 350ms
+                      - lvgl.page.show:
+                          id: page_audio
+                          animation: MOVE_LEFT
+                          time: 300ms
+                  widgets:
+                    - label:
+                        text: "Qmusic"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        align: TOP_MID
+                        y: 4
+                    - label:
+                        id: lbl_music_qmusic_status
+                        text: "AFSPELEN"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: BOTTOM_MID
+                        y: -4
+
+              - button:
+                  id: btn_music_veronica
+                  width: 140
+                  height: 58
+                  styles: style_card
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: button.press
+                          data:
+                            entity_id: ${music_veronica}
+                      - delay: 350ms
+                      - lvgl.page.show:
+                          id: page_audio
+                          animation: MOVE_LEFT
+                          time: 300ms
+                  widgets:
+                    - label:
+                        text: "Veronica"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        align: TOP_MID
+                        y: 4
+                    - label:
+                        id: lbl_music_veronica_status
+                        text: "AFSPELEN"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: BOTTOM_MID
+                        y: -4
+
+        # Row 3 — Bingo FM / Sterren NL
+        - obj:
+            width: 292
+            height: 58
+            x: 14
+            y: 162
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+
+              - button:
+                  id: btn_music_bingo_fm
+                  width: 140
+                  height: 58
+                  styles: style_card
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: button.press
+                          data:
+                            entity_id: ${music_bingo_fm}
+                      - delay: 350ms
+                      - lvgl.page.show:
+                          id: page_audio
+                          animation: MOVE_LEFT
+                          time: 300ms
+                  widgets:
+                    - label:
+                        text: "Bingo FM"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        align: TOP_MID
+                        y: 4
+                    - label:
+                        id: lbl_music_bingo_fm_status
+                        text: "AFSPELEN"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: BOTTOM_MID
+                        y: -4
+
+              - button:
+                  id: btn_music_sterren_nl
+                  width: 140
+                  height: 58
+                  styles: style_card
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: button.press
+                          data:
+                            entity_id: ${music_sterren_nl}
+                      - delay: 350ms
+                      - lvgl.page.show:
+                          id: page_audio
+                          animation: MOVE_LEFT
+                          time: 300ms
+                  widgets:
+                    - label:
+                        text: "Sterren NL"
+                        text_font: font_header
+                        text_color: color_text_primary
+                        align: TOP_MID
+                        y: 4
+                    - label:
+                        id: lbl_music_sterren_nl_status
+                        text: "AFSPELEN"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: BOTTOM_MID
+                        y: -4
+
+
+    # ========================================================================
+
+    # ========================================================================
+    # PAGE 5 — AUDIO
+    # ========================================================================
+
+    - id: page_audio
+      scrollable: false
+      scrollbar_mode: "OFF"
+
+      on_load:
+        - script.execute:
+            id: update_dots
+            page: 4
+        - if:
+            condition:
+              lambda: 'return id(media_player_state).state == "playing";'
+            then:
+              - script.stop: audio_return_home
+            else:
+              - script.execute: audio_return_home
+        - lvgl.slider.update:
+            id: slider_media_volume
+            value: !lambda |-
+              if (isnan(id(media_player_volume).state))
+                return 0;
+              return id(media_player_volume).state * 100.0f;
+        - lvgl.label.update:
+            id: lbl_audio_volume
+            text: !lambda |-
+              if (isnan(id(media_player_volume).state))
+                return std::string("--%");
+              char buf[12];
+              snprintf(buf, sizeof(buf), "%.0f%%", id(media_player_volume).state * 100.0f);
+              return std::string(buf);
+        - lvgl.label.update:
+            id: lbl_audio_title
+            text: !lambda |-
+              if (id(media_player_title).state.empty())
+                return std::string("Geen media");
+              return id(media_player_title).state;
+        - lvgl.label.update:
+            id: lbl_audio_state
+            text: !lambda |-
+              const auto &s = id(media_player_state).state;
+              if (s == "playing")
+                return std::string("SPEELT");
+              if (s == "paused")
+                return std::string("GEPAUZEERD");
+              if (s == "idle" || s == "standby")
+                return std::string("GEREED");
+              if (s == "off" || s == "unavailable")
+                return std::string("NIET BESCHIKBAAR");
+              return s;
+
+      on_swipe_right:
+        then:
+          - lvgl.page.previous:
+              animation: MOVE_RIGHT
+              time: 300ms
+
+      bg_color: color_bg
+      bg_opa: COVER
+      pad_all: 0
+
+      widgets:
+
+        # Header
+        - obj:
+            width: 292
+            height: 28
+            x: 14
+            y: 2
+            pad_all: 0
+            bg_opa: TRANSP
+            border_width: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+              flex_align_cross: CENTER
+            widgets:
+              - label:
+                  text: "Audio"
+                  text_font: font_header
+                  text_color: color_text_primary
+              - label:
+                  text: "${media_player_name}"
+                  text_font: font_small
+                  text_color: color_teal
+
+        # Now playing
+        - obj:
+            width: 292
+            height: 42
+            x: 14
+            y: 34
+            styles: style_card
+            scrollable: false
+            scrollbar_mode: "OFF"
+            widgets:
+              - label:
+                  id: lbl_audio_state
+                  text: "Laden..."
+                  text_font: font_small
+                  text_color: color_teal
+                  x: 2
+                  y: 0
+              - label:
+                  id: lbl_audio_title
+                  text: "Geen media"
+                  text_font: font_body
+                  text_color: color_text_primary
+                  width: 270
+                  long_mode: DOT
+                  x: 2
+                  y: 17
+
+        # Volume percentage
+        - label:
+            id: lbl_audio_volume
+            text: "--%"
+            text_font: font_volume
+            text_color: color_text_primary
+            align: TOP_MID
+            y: 79
+
+        # Volume slider
+        - slider:
+            id: slider_media_volume
+            x: 28
+            y: 111
+            width: 264
+            height: 22
+            min_value: 0
+            max_value: 100
+            value: 30
+            adv_hittest: true
+            ext_click_area: 8
+            bg_color: color_bg_card_active
+            bg_opa: COVER
+            radius: 10
+            border_width: 0
+            indicator:
+              bg_color: color_teal
+              bg_opa: COVER
+              radius: 10
+            knob:
+              bg_color: color_teal
+              bg_opa: COVER
+              radius: 10
+            on_change:
+              then:
+                - lvgl.label.update:
+                    id: lbl_audio_volume
+                    text:
+                      format: "%.0f%%"
+                      args: ["x"]
+            on_release:
+              then:
+                - homeassistant.action:
+                    action: media_player.volume_set
+                    data:
+                      entity_id: ${media_player_entity}
+                      volume_level: !lambda return (x / 100.0f);
+
+        # Volume controls
+        - obj:
+            width: 292
+            height: 36
+            x: 14
+            y: 143
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+              - button:
+                  width: 82
+                  height: 36
+                  styles: style_card
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: media_player.volume_down
+                          data:
+                            entity_id: ${media_player_entity}
+                  widgets:
+                    - label:
+                        text: "-"
+                        text_font: font_header
+                        text_color: color_teal
+                        align: CENTER
+
+              - button:
+                  width: 116
+                  height: 36
+                  styles: style_card
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - if:
+                          condition:
+                            binary_sensor.is_on: media_player_muted
+                          then:
+                            - homeassistant.action:
+                                action: media_player.volume_mute
+                                data:
+                                  entity_id: ${media_player_entity}
+                                  is_volume_muted: "false"
+                          else:
+                            - homeassistant.action:
+                                action: media_player.volume_mute
+                                data:
+                                  entity_id: ${media_player_entity}
+                                  is_volume_muted: "true"
+                  widgets:
+                    - label:
+                        text: "MUTE"
+                        text_font: font_small
+                        text_color: color_text_primary
+                        align: CENTER
+
+              - button:
+                  width: 82
+                  height: 36
+                  styles: style_card
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: media_player.volume_up
+                          data:
+                            entity_id: ${media_player_entity}
+                  widgets:
+                    - label:
+                        text: "+"
+                        text_font: font_header
+                        text_color: color_teal
+                        align: CENTER
+
+        # Playback controls
+        - obj:
+            width: 292
+            height: 36
+            x: 14
+            y: 185
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "OFF"
+            layout:
+              type: FLEX
+              flex_flow: ROW
+              flex_align_main: SPACE_BETWEEN
+            widgets:
+              - button:
+                  width: 140
+                  height: 36
+                  styles: style_card_teal
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: media_player.media_play_pause
+                          data:
+                            entity_id: ${media_player_entity}
+                  widgets:
+                    - label:
+                        text: "PLAY / PAUZE"
+                        text_font: font_small
+                        text_color: color_teal
+                        align: CENTER
+
+              - button:
+                  width: 140
+                  height: 36
+                  styles: style_card
+                  pad_all: 0
+                  on_click:
+                    then:
+                      - homeassistant.action:
+                          action: media_player.media_stop
+                          data:
+                            entity_id: ${media_player_entity}
+                  widgets:
+                    - label:
+                        text: "STOP"
+                        text_font: font_small
+                        text_color: color_red
+                        align: CENTER
+
+
+# ============================================================================
+# CLOCK / BEGROETING / STATUS
+# ============================================================================
+
+interval:
+
+  - interval: 30s
+
+    then:
+
+      # Begroeting
+      - lvgl.label.update:
+          id: lbl_greeting
+          text: !lambda |-
+            auto now = id(ha_time).now();
+
+            if (!now.is_valid())
+              return std::string("Welkom");
+
+            if (now.hour >= 5 && now.hour < 12)
+              return std::string("Goedemorgen");
+
+            if (now.hour >= 12 && now.hour < 18)
+              return std::string("Goedemiddag");
+
+            if (now.hour >= 18)
+              return std::string("Goedenavond");
+
+            return std::string("Goedenacht");
+
+      # Volledige datum onder de begroeting
+      - lvgl.label.update:
+          id: lbl_greeting_date
+          text: !lambda |-
+            auto now = id(ha_time).now();
+
+            if (!now.is_valid())
+              return std::string("--");
+
+            const char* days_full[] = {
+              "Zondag",
+              "Maandag",
+              "Dinsdag",
+              "Woensdag",
+              "Donderdag",
+              "Vrijdag",
+              "Zaterdag"
+            };
+
+            const char* months_full[] = {
+              "januari",
+              "februari",
+              "maart",
+              "april",
+              "mei",
+              "juni",
+              "juli",
+              "augustus",
+              "september",
+              "oktober",
+              "november",
+              "december"
+            };
+
+            char buf[48];
+
+            snprintf(
+              buf,
+              sizeof(buf),
+              "%s %d %s",
+              days_full[now.day_of_week - 1],
+              now.day_of_month,
+              months_full[now.month - 1]
+            );
+
+            return std::string(buf);
+
+      # Grote tijd onder de datum
+      - lvgl.label.update:
+          id: lbl_home_time
+          text: !lambda |-
+            auto now = id(ha_time).now();
+
+            if (!now.is_valid())
+              return std::string("--:--");
+
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%02d:%02d", now.hour, now.minute);
+            return std::string(buf);
+
+      # Kleine korte datum linksboven; geen dubbele tijd meer
+      - lvgl.label.update:
+          id: lbl_clock
+          text: !lambda |-
+            auto now = id(ha_time).now();
+
+            if (!now.is_valid())
+              return std::string("-- -- ---");
+
+            const char* days[] = {
+              "ZO",
+              "MA",
+              "DI",
+              "WO",
+              "DO",
+              "VR",
+              "ZA"
+            };
+
+            const char* months[] = {
+              "JAN",
+              "FEB",
+              "MRT",
+              "APR",
+              "MEI",
+              "JUN",
+              "JUL",
+              "AUG",
+              "SEP",
+              "OKT",
+              "NOV",
+              "DEC"
+            };
+
+            char buf[16];
+
+            snprintf(
+              buf,
+              sizeof(buf),
+              "%s %d %s",
+              days[now.day_of_week - 1],
+              now.day_of_month,
+              months[now.month - 1]
+            );
+
+            return std::string(buf);
+
+  - interval: 5s
+    then:
+      - script.execute: update_ha_connection
+
+  - interval: 30s
+    then:
+      - script.execute: update_washing_machine_popup
+
+# ============================================================================
+# DISPLAY BRIGHTNESS
+# ============================================================================
+
+number:
+
+  - platform: template
+    name: "Display Brightness"
+    id: display_brightness
+
+    min_value: 10
+    max_value: 100
+    step: 5
+
+    initial_value: 65
+    optimistic: true
+
+    set_action:
+
+      - light.turn_on:
+          id: backlight
+          brightness: !lambda |-
+            return x / 100.0;
